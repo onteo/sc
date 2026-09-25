@@ -1,2 +1,4 @@
 node_modules/
 animation/stills/
+promo/stills/
+*.tmp.mp4

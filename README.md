@@ -26,3 +26,23 @@ node render.mjs mux                 # sadece müziği yeniden ekle
 
 `animation/infoakademi.html` tarayıcıda (http sunucusu üzerinden) açılırsa animasyonu canlı oynatır;
 `?w=1920&h=1080` ile yatay sürüm. Renkler dosyanın başındaki `C` nesnesinden değiştirilebilir.
+
+---
+
+# infoakademi — uygulama tanıtım videosu (21 sn)
+
+Uygulamanın gerçek ekran görüntüleri (`promo/app/`) telefon çerçevesinde, dokunma animasyonlarıyla canlandırılır:
+logo → açılış ekranı · ana sayfa · ders hatırlatma bildirimi · konumla yoklama ("Ben geldim" → onay) ·
+sohbet (yaz, gönder, cevap) · online dersler · ders materyalleri · App Store / Google Play kapanışı.
+
+| Dosya | Boyut | Kullanım |
+|---|---|---|
+| `videos/infoakademi-app-reels-1080x1920.mp4` | 1080×1920, 60 fps | Reels / TikTok / Shorts |
+| `videos/infoakademi-app-yatay-1920x1080.mp4` | 1920×1080, 60 fps | X, YouTube, web sitesi |
+| `videos/infoakademi-app-store-preview-886x1920.mp4` | 886×1920, 30 fps | App Store önizleme (iPhone 6.5"/6.7") |
+
+```bash
+cd promo
+python3 music.py        # ../audio/infoakademi-app-music.wav
+node render.mjs         # üç format + müzik
+```

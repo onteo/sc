@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>infoakademi app promo</title>
+<style>
+  html, body { margin: 0; background: #000; height: 100%; }
+  body { display: grid; place-items: center; }
+  canvas { max-width: 100vw; max-height: 100vh; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * infoakademi — uygulama tanıtım videosu (21 sn)
+ * Gerçek ekran görüntüleri telefon çerçevesinde, dokunma animasyonlarıyla canlandırılır.
+ * ?w=1080&h=1920 (Reels) · ?w=1920&h=1080 (yatay) · ?w=886&h=1920 (App Store önizleme)
+ */
+const Q = new URLSearchParams(location.search);
+const W = +Q.get('w') || 1080, H = +Q.get('h') || 1920;
+const RENDER = Q.has('render');
+const FPS = +Q.get('fps') || 60;
+const DUR = 21;
+const V = H > W;
+const u = Math.min(W, H) / 1080;
+const cx = W / 2, cy = H / 2;
+
+const C = {
+  bg: '#F3F5FA', ink: '#0E1116', gray: '#5B6170', blue: '#2F6BF2', blue2: '#4A90F7',
+  purple: '#7B6CF0', green: '#1FB255', white: '#FFFFFF',
+};
+
+const out = document.getElementById('c');
+out.width = W; out.height = H;
+const octx = out.getContext('2d');
+const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
+let ctx = buf.getContext('2d');
+// telefon ekranı: ekran görüntüsünün doğal çözünürlüğü
+const SW = 923, SH = 2000;
+const scr = document.createElement('canvas'); scr.width = SW; scr.height = SH;
+const sctx = scr.getContext('2d');
+const tmp = document.createElement('canvas'); tmp.width = SW; tmp.height = SH;
+const tctx = tmp.getContext('2d');
+
+// ---------- yardımcılar ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, p) => a + (b - a) * p;
+const E = {
+  outExpo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  inExpo: x => x <= 0 ? 0 : Math.pow(2, 10 * x - 10),
+  outCubic: x => 1 - Math.pow(1 - x, 3),
+  inCubic: x => x * x * x,
+  outQuint: x => 1 - Math.pow(1 - x, 5),
+  inOutCubic: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  inOutQuint: x => x < .5 ? 16 * x ** 5 : 1 - Math.pow(-2 * x + 2, 5) / 2,
+  outBack: (x, s = 1.70158) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2),
+  inBack: (x, s = 1.70158) => (s + 1) * x * x * x - s * x * x,
+};
+// yumuşak aç/kapa penceresi
+const win = (t, a, b, c, d) => E.inOutCubic(prog(t, a, b)) * (1 - E.inOutCubic(prog(t, c, d)));
+
+function font(g, size, weight = 700) { g.font = `${Math.round(weight)} ${size}px Inter`; }
+function measure(g, str, size, weight = 700, track = 0) {
+  font(g, size, weight); g.letterSpacing = `${track * size}px`;
+  const w = g.measureText(str).width; g.letterSpacing = '0px'; return w;
+}
+function text(g, str, x, y, size, weight, color, align = 'left', track = -0.02, alpha = 1) {
+  g.save(); font(g, size, weight); g.letterSpacing = `${track * size}px`;
+  g.textAlign = align; g.textBaseline = 'alphabetic'; g.fillStyle = color; g.globalAlpha *= alpha;
+  g.fillText(str, x, y); g.restore();
+}
+function reveal(g, str, x, y, size, weight, color, p, o = {}) {
+  if (p <= 0) return;
+  const align = o.align || 'left', track = o.track ?? -0.035;
+  g.save();
+  const w = measure(g, str, size, weight, track);
+  const x0 = align === 'center' ? x - w / 2 : align === 'right' ? x - w : x;
+  g.beginPath(); g.rect(x0 - size * .2, y - size * 1.05, w + size * .4, size * 1.35); g.clip();
+  font(g, size, weight); g.letterSpacing = `${track * size}px`; g.textAlign = align;
+  g.fillStyle = color; g.globalAlpha *= (o.alpha ?? 1);
+  g.fillText(str, x, y + (1 - p) * size * 1.3);
+  g.restore();
+}
+function rrect(g, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+function circle(g, x, y, r, fill) { if (r <= 0) return; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fillStyle = fill; g.fill(); }
+
+// ---------- görseller ----------
+const IMG = {};
+const names = ['splash', 'home', 'yoklama', 'chat', 'videos'];
+function loadImg(n) {
+  return new Promise((res, rej) => { const i = new Image(); i.onload = () => { IMG[n] = i; res(); }; i.onerror = rej; i.src = `app/${n}.webp`; });
+}
+let COL = {};
+function sample(img, x, y) {
+  tctx.clearRect(0, 0, 4, 4); tctx.drawImage(img, x, y, 1, 1, 0, 0, 1, 1);
+  const d = tctx.getImageData(0, 0, 1, 1).data; return `rgb(${d[0]},${d[1]},${d[2]})`;
+}
+// açılış ekranındaki logo (beyaz zemin → multiply ile şeffaf gibi davranır)
+const ICON = { x: 306, y: 656, s: 312 };
+function drawIcon(g, x, y, size, alpha = 1) {
+  if (alpha <= 0 || size <= 0) return;
+  g.save(); g.globalAlpha *= alpha; g.globalCompositeOperation = 'multiply';
+  g.drawImage(IMG.splash, ICON.x, ICON.y, ICON.s, ICON.s, x - size / 2, y - size / 2, size, size);
+  g.restore();
+}
+// kelime logosu: "info" kalın, "akademi" ince (uygulamadaki gibi)
+function wordmark(g, x, y, size, alpha = 1, p = 1) {
+  const w1 = measure(g, 'info', size, 700, -0.01), w2 = measure(g, 'akademi', size, 400, -0.01);
+  const x0 = x - (w1 + w2) / 2;
+  reveal(g, 'info', x0, y, size, 700, '#17171A', p, { track: -0.01, alpha });
+  reveal(g, 'akademi', x0 + w1, y, size, 400, '#4A4A50', clamp(p * 1.15 - .15), { track: -0.01, alpha });
+  return w1 + w2;
+}
+
+// ---------- telefon ----------
+// ekran → video koordinatı için telefonun o anki dönüşümü
+let PH = { x: 0, y: 0, k: 1, rot: 0 };
+function phoneBase() {
+  if (V) { const sh = H * 0.72; return { x: cx, y: H * 0.612, k: sh / SH }; }
+  const sh = H * 0.86; return { x: W * 0.7, y: cy, k: sh / SH };
+}
+function screenToVideo(px, py) {
+  const { x, y, k, rot } = PH;
+  const lx = (px - SW / 2) * k, ly = (py - SH / 2) * k;
+  return [x + lx * Math.cos(rot) - ly * Math.sin(rot), y + lx * Math.sin(rot) + ly * Math.cos(rot)];
+}
+function drawPhone(alpha = 1) {
+  const { x, y, k, rot } = PH;
+  const sw = SW * k, sh = SH * k, bez = 13 * u * (k / phoneBase().k), r = sw * 0.135;
+  ctx.save(); ctx.globalAlpha = alpha;
+  ctx.translate(x, y); ctx.rotate(rot);
+  // gölge
+  ctx.save();
+  ctx.shadowColor = 'rgba(20,30,70,.28)'; ctx.shadowBlur = 90 * u; ctx.shadowOffsetY = 40 * u;
+  rrect(ctx, -sw / 2 - bez, -sh / 2 - bez, sw + 2 * bez, sh + 2 * bez, r + bez);
+  ctx.fillStyle = '#1C1D22'; ctx.fill();
+  ctx.restore();
+  // çerçeve parlaması
+  const gr = ctx.createLinearGradient(-sw / 2 - bez, 0, sw / 2 + bez, 0);
+  gr.addColorStop(0, '#5A5D66'); gr.addColorStop(.08, '#2A2B31'); gr.addColorStop(.92, '#2A2B31'); gr.addColorStop(1, '#5A5D66');
+  rrect(ctx, -sw / 2 - bez, -sh / 2 - bez, sw + 2 * bez, sh + 2 * bez, r + bez);
+  ctx.lineWidth = 3 * u; ctx.strokeStyle = gr; ctx.stroke();
+  // yan tuşlar
+  ctx.fillStyle = '#2A2B31';
+  ctx.fillRect(sw / 2 + bez - 1, -sh * .2, 5 * u, sh * .12);
+  ctx.fillRect(-sw / 2 - bez - 4 * u, -sh * .28, 5 * u, sh * .06);
+  ctx.fillRect(-sw / 2 - bez - 4 * u, -sh * .19, 5 * u, sh * .06);
+  // ekran
+  ctx.save();
+  rrect(ctx, -sw / 2, -sh / 2, sw, sh, r); ctx.clip();
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(scr, -sw / 2, -sh / 2, sw, sh);
+  ctx.restore();
+  // dynamic island
+  const iw = sw * 0.3, ih = sw * 0.088;
+  rrect(ctx, -iw / 2, -sh / 2 + sw * 0.03, iw, ih, ih / 2); ctx.fillStyle = '#000'; ctx.fill();
+  ctx.restore();
+}
+
+// ---------- dokunma göstergesi (ekran koordinatlarında) ----------
+const TAPS = [
+  [3.75, 743, 650], [5.6, 455, 1022], [7.95, 461, 1183], [9.3, 89, 195], [10.05, 645, 1845],
+  [10.95, 460, 1848], [12.35, 859, 1848], [14.2, 66, 205], [15.0, 277, 1845], [16.0, 461, 680], [17.05, 820, 1318]];
+function taps(g, t) {
+  for (const [T, x, y] of TAPS) {
+    if (t < T - .3 || t > T + .6) continue;
+    const a = prog(t, T - .3, T - .12) * (1 - prog(t, T + .18, T + .42));
+    const press = 1 - .18 * Math.sin(prog(t, T - .04, T + .16) * Math.PI);
+    const s = E.outBack(prog(t, T - .3, T - .1)) * press;
+    g.save();
+    g.globalAlpha = a;
+    circle(g, x, y, 50 * s, 'rgba(255,255,255,.55)');
+    g.lineWidth = 3; g.strokeStyle = 'rgba(20,24,40,.35)';
+    g.beginPath(); g.arc(x, y, 50 * s, 0, Math.PI * 2); g.stroke();
+    g.restore();
+    const rp = prog(t, T, T + .5);
+    if (rp > 0 && rp < 1) {
+      g.save(); g.globalAlpha = (1 - rp) * .8; g.lineWidth = 6 * (1 - rp) + 1; g.strokeStyle = '#fff';
+      g.beginPath(); g.arc(x, y, 50 + E.outCubic(rp) * 90, 0, Math.PI * 2); g.stroke(); g.restore();
+    }
+  }
+}
+
+// ---------- ekran içeriği ----------
+function shot(n, x = 0, y = 0, alpha = 1, s = 1) {
+  sctx.save(); sctx.globalAlpha = alpha;
+  if (s !== 1) { sctx.translate(SW / 2, SH / 2); sctx.scale(s, s); sctx.translate(-SW / 2, -SH / 2); }
+  sctx.drawImage(IMG[n], x, y); sctx.restore();
+}
+function dim(a) { if (a > 0) { sctx.fillStyle = `rgba(0,0,0,${a})`; sctx.fillRect(0, 0, SW, SH); } }
+function edgeShadow(x) {
+  const g = sctx.createLinearGradient(x - 40, 0, x, 0);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.18)');
+  sctx.fillStyle = g; sctx.fillRect(x - 40, 0, 40, SH);
+}
+
+function drawScreen(t) {
+  sctx.save();
+  sctx.fillStyle = '#fff'; sctx.fillRect(0, 0, SW, SH);
+  if (t < 3.45) {
+    shot('splash');
+    // açılış logosu videodan uçarak gelirken ekrandakini gizle
+    if (t < 2.72) { sctx.fillStyle = '#fff'; sctx.fillRect(250, 640, 440, 480); }
+    if (t > 3.1) shot('home', 0, 0, E.outCubic(prog(t, 3.1, 3.45)), lerp(1.06, 1, E.outCubic(prog(t, 3.1, 3.45))));
+    sctx.restore(); return;
+  }
+  const chatIn = E.outQuint(prog(t, 10.2, 10.62)) - E.inOutQuint(prog(t, 14.3, 14.72));
+  const vidIn = E.outQuint(prog(t, 15.12, 15.55));
+  const push = Math.max(chatIn, vidIn);
+  const modal = E.outQuint(prog(t, 5.75, 6.2)) * (1 - E.inOutQuint(prog(t, 9.4, 9.8)));
+
+  if (push < 1 && modal < 1) {
+    shot('home', -0.3 * SW * push, 0, 1, 1 - .04 * modal);
+    notif(t);
+    dim(.28 * Math.max(push, modal));
+  }
+  if (modal > 0) {
+    sctx.save(); sctx.translate(0, SH * (1 - modal));
+    sctx.shadowColor = 'rgba(0,0,0,.3)'; sctx.shadowBlur = 60;
+    yoklama(t);
+    sctx.restore();
+  }
+  if (chatIn > 0) { const x = SW * (1 - chatIn); edgeShadow(x); sctx.save(); sctx.translate(x, 0); chat(t); sctx.restore(); }
+  if (vidIn > 0) { const x = SW * (1 - vidIn); edgeShadow(x); sctx.save(); sctx.translate(x, 0); videos(t); sctx.restore(); }
+  taps(sctx, t);
+  sctx.restore();
+}
+
+// iOS tarzı bildirim — ders hatırlatma
+function notif(t) {
+  const p = E.outBack(prog(t, 4.4, 4.85), 1.2) * (1 - E.inCubic(prog(t, 5.25, 5.55)));
+  if (p <= 0) return;
+  const x = 22, w = SW - 44, h = 196, y = lerp(-h - 20, 64, p);
+  tctx.clearRect(0, 0, SW, SH); tctx.drawImage(scr, 0, 0);
+  sctx.save();
+  sctx.shadowColor = 'rgba(0,0,0,.18)'; sctx.shadowBlur = 50; sctx.shadowOffsetY = 16;
+  rrect(sctx, x, y, w, h, 52); sctx.fillStyle = 'rgba(245,245,248,.6)'; sctx.fill();
+  sctx.restore();
+  sctx.save(); rrect(sctx, x, y, w, h, 52); sctx.clip();
+  sctx.filter = 'blur(26px)'; sctx.drawImage(tmp, 0, 0); sctx.filter = 'none';
+  sctx.fillStyle = 'rgba(248,248,250,.78)'; sctx.fillRect(x, y, w, h);
+  drawIcon(sctx, x + 82, y + h / 2, 104);
+  text(sctx, 'Ders hatırlatma', x + 158, y + 78, 34, 700, '#111', 'left', -0.01);
+  text(sctx, 'şimdi', x + w - 36, y + 78, 28, 500, '#8A8A90', 'right', 0);
+  text(sctx, "Modelistlik Kursu Pazar 12:00'de başlıyor.", x + 158, y + 124, 30, 400, '#222', 'left', -0.01);
+  text(sctx, 'Eğitmen: Tuğba · 1 saat kaldı', x + 158, y + 164, 28, 400, '#6A6A70', 'left', -0.01);
+  sctx.restore();
+}
+
+// konumla yoklama
+function yoklama(t) {
+  sctx.drawImage(IMG.yoklama, 0, 0);
+  sctx.shadowBlur = 0; sctx.shadowColor = 'transparent';
+  // konum halkaları
+  const ra = prog(t, 6.2, 6.5) * (1 - prog(t, 9.2, 9.5));
+  for (let i = 0; i < 3; i++) {
+    const ph = ((t - 6.2) / 1.3 + i / 3) % 1;
+    if (t < 6.2) break;
+    sctx.save(); sctx.globalAlpha = ra * (1 - ph) * .7; sctx.strokeStyle = '#fff'; sctx.lineWidth = 4;
+    sctx.beginPath(); sctx.arc(461, 672, 95 + ph * 190, 0, Math.PI * 2); sctx.stroke(); sctx.restore();
+  }
+  // konum kartı vurgusu
+  const ka = win(t, 6.8, 7.1, 7.6, 7.9);
+  if (ka > 0) {
+    sctx.save(); sctx.globalAlpha = ka; sctx.lineWidth = 5; sctx.strokeStyle = '#fff';
+    rrect(sctx, 47, 913, 414, 157, 46); sctx.stroke(); sctx.restore();
+  }
+  // "Ben geldim" → basılma + onay
+  const bx = 47, by = 1108, bw = 829, bh = 150;
+  const pr = Math.sin(prog(t, 7.93, 8.15) * Math.PI) * .03;
+  if (pr > 0) {
+    sctx.save(); sctx.translate(bx + bw / 2, by + bh / 2); sctx.scale(1 - pr, 1 - pr); sctx.translate(-(bx + bw / 2), -(by + bh / 2));
+    sctx.drawImage(IMG.yoklama, bx - 10, by - 10, bw + 20, bh + 20, bx - 10, by - 10, bw + 20, bh + 20);
+    sctx.restore();
+  }
+  const sp = prog(t, 8.08, 8.5);
+  if (sp > 0) {
+    sctx.save(); rrect(sctx, bx, by, bw, bh, bh / 2); sctx.clip();
+    circle(sctx, 461, 1183, E.outCubic(sp) * 900, C.green);
+    const tp = E.outBack(prog(t, 8.2, 8.55), 2);
+    sctx.save(); sctx.translate(461, by + bh / 2); sctx.scale(tp, tp); sctx.translate(-461, -(by + bh / 2));
+    const lw = measure(sctx, 'Yoklaman alındı', 42, 700, -0.01);
+    const x0 = 461 - (lw + 64) / 2;
+    // onay işareti çizgisi
+    const ck = prog(t, 8.3, 8.6);
+    sctx.lineWidth = 8; sctx.lineCap = 'round'; sctx.lineJoin = 'round'; sctx.strokeStyle = '#fff';
+    const a = [x0 + 4, 1186], b = [x0 + 18, 1200], c = [x0 + 44, 1168];
+    sctx.beginPath(); sctx.moveTo(...a);
+    if (ck < .4) sctx.lineTo(lerp(a[0], b[0], ck / .4), lerp(a[1], b[1], ck / .4));
+    else { sctx.lineTo(...b); const q = (ck - .4) / .6; sctx.lineTo(lerp(b[0], c[0], q), lerp(b[1], c[1], q)); }
+    if (ck > 0) sctx.stroke();
+    text(sctx, 'Yoklaman alındı', x0 + 64, 1198, 42, 700, '#fff', 'left', -0.01);
+    sctx.restore();
+    sctx.restore();
+    // saat damgası
+    const st = E.outCubic(prog(t, 8.5, 8.9));
+    text(sctx, 'Katılım kaydedildi · 11:58', 461, 1330 + (1 - st) * 20, 30, 500, 'rgba(255,255,255,.9)', 'center', 0, st);
+    // konfeti
+    const cp = prog(t, 8.12, 9.4);
+    if (cp > 0 && cp < 1) {
+      const cols = ['#fff', '#FFD84D', '#7BE39B', '#4A90F7', '#FF8A65'];
+      for (let i = 0; i < 34; i++) {
+        const ang = -Math.PI / 2 + (i / 34 - .5) * 2.6 + Math.sin(i * 12.9) * .2;
+        const v = 700 + (i * 37 % 11) * 60;
+        const tt = cp * 1.28;
+        const px = 461 + Math.cos(ang) * v * tt, py = 1183 + Math.sin(ang) * v * tt + 900 * tt * tt;
+        sctx.save(); sctx.globalAlpha = 1 - cp; sctx.translate(px, py); sctx.rotate(i + tt * 8);
+        sctx.fillStyle = cols[i % 5]; sctx.fillRect(-7, -12, 14, 24); sctx.restore();
+      }
+    }
+  }
+}
+
+// sohbet: yaz, gönder, cevap al
+const MSG = 'Tamamdır hocam, pazar oradayım';
+const REPLY = 'Harika, pazar görüşmek üzere!';
+function chat(t) {
+  const img = IMG.chat, TOP = 262, BOT = 1775;
+  const s1 = 150 * E.outCubic(prog(t, 12.45, 12.75));
+  const s2 = 118 * E.outCubic(prog(t, 12.95, 13.2));
+  const s3 = 92 * E.outCubic(prog(t, 13.62, 13.85));
+  const sc = s1 + s2 + s3;
+  sctx.fillStyle = COL.chatBg; sctx.fillRect(0, 0, SW, SH);
+  sctx.save(); sctx.beginPath(); sctx.rect(0, TOP, SW, BOT - TOP); sctx.clip();
+  sctx.drawImage(img, 0, TOP, SW, BOT - TOP, 0, TOP - sc, SW, BOT - TOP);
+  // benim mesajım
+  const my = 1793 - sc;
+  const mp = E.outBack(prog(t, 12.45, 12.8), 1.4);
+  if (mp > 0) {
+    const tw = measure(sctx, MSG, 31, 400, -0.01);
+    const bw = tw + 60, bh = 124, bx = 895 - bw;
+    sctx.save(); sctx.translate(895, my + bh); sctx.scale(mp, mp); sctx.translate(-895, -(my + bh));
+    rrect(sctx, bx, my, bw, bh, 38); sctx.fillStyle = COL.blue; sctx.fill();
+    text(sctx, MSG, bx + 30, my + 56, 31, 400, '#fff', 'left', -0.01);
+    text(sctx, '17:44  ✓✓', bx + bw - 30, my + 100, 25, 400, 'rgba(255,255,255,.8)', 'right', 0);
+    sctx.restore();
+  }
+  // yazıyor... → cevap
+  const ry = 1793 + 150 - sc;
+  const ta = prog(t, 12.95, 13.1) * (1 - prog(t, 13.55, 13.62));
+  if (ta > 0) {
+    sctx.save(); sctx.globalAlpha = ta;
+    rrect(sctx, 28, ry, 150, 96, 38); sctx.fillStyle = COL.bubble; sctx.fill();
+    for (let i = 0; i < 3; i++) {
+      const b = Math.max(0, Math.sin((t * 7 - i * .7) * 1.0)) * 8;
+      circle(sctx, 70 + i * 33, ry + 50 - b, 9, '#8E8E94');
+    }
+    sctx.restore();
+  }
+  const rp = E.outBack(prog(t, 13.6, 13.92), 1.4);
+  if (rp > 0) {
+    const tw = measure(sctx, REPLY, 31, 400, -0.01);
+    const bw = tw + 60, bh = 176;
+    sctx.save(); sctx.translate(28, ry + bh); sctx.scale(rp, rp); sctx.translate(-28, -(ry + bh));
+    rrect(sctx, 28, ry, bw, bh, 38); sctx.fillStyle = COL.bubble; sctx.fill();
+    text(sctx, 'infoakademi', 58, ry + 46, 27, 600, '#23A455', 'left', -0.01);
+    text(sctx, REPLY, 58, ry + 98, 31, 400, '#1A1A1A', 'left', -0.01);
+    text(sctx, '17:44', 58, ry + 146, 25, 400, '#8A8A90', 'left', 0);
+    sctx.restore();
+  }
+  sctx.restore();
+  // üst ve alt sabit alanlar
+  sctx.drawImage(img, 0, 0, SW, TOP, 0, 0, SW, TOP);
+  sctx.drawImage(img, 0, BOT, SW, SH - BOT, 0, BOT, SW, SH - BOT);
+  // yazma
+  const n = Math.floor(MSG.length * prog(t, 11.15, 12.15));
+  const focus = t > 11.0 && t < 12.42;
+  if (focus) {
+    rrect(sctx, 150, 1815, 600, 70, 20); sctx.fillStyle = COL.input; sctx.fill();
+    const s = MSG.slice(0, n);
+    const w = measure(sctx, s, 32, 400, -0.01);
+    text(sctx, s, 165, 1862, 32, 400, '#111', 'left', -0.01);
+    if (Math.floor(t * 2.4) % 2 === 0 || n < MSG.length) { sctx.fillStyle = COL.blue; sctx.fillRect(168 + w, 1826, 3.5, 46); }
+  }
+}
+
+// online videolar + ders materyalleri
+const FILES = [['PDF', '#E5484D', 'Ders notları - 1. hafta', '2,4 MB'], ['XLS', '#1FA15A', 'Alıştırma tablosu', '860 KB'], ['PPT', '#F07A2B', 'Sunum: Muhasebenin temelleri', '5,1 MB']];
+function videos(t) {
+  sctx.drawImage(IMG.videos, 0, 0);
+  const sp = E.outQuint(prog(t, 16.15, 16.6));
+  if (sp <= 0) return;
+  dim(.35 * sp);
+  const sh = 1130, y = SH - sh * sp;
+  sctx.save();
+  sctx.shadowColor = 'rgba(0,0,0,.25)'; sctx.shadowBlur = 60;
+  rrect(sctx, 0, y, SW, sh + 80, 56); sctx.fillStyle = '#fff'; sctx.fill();
+  sctx.restore();
+  rrect(sctx, SW / 2 - 50, y + 22, 100, 12, 6); sctx.fillStyle = '#D5D6DB'; sctx.fill();
+  // küçük oynatıcı
+  sctx.save(); rrect(sctx, 44, y + 70, 300, 169, 24); sctx.clip();
+  sctx.drawImage(IMG.videos, 38, 441, 847, 476, 44, y + 70, 300, 169); sctx.restore();
+  text(sctx, 'Muhasebenin Temelleri', 372, y + 122, 38, 700, '#111', 'left', -0.02);
+  text(sctx, 'Eğitmen: Zulfikar · 7:42', 372, y + 170, 28, 400, '#7A7A82', 'left', 0);
+  // izleme ilerlemesi
+  rrect(sctx, 372, y + 205, 470, 10, 5); sctx.fillStyle = '#E8E9EE'; sctx.fill();
+  rrect(sctx, 372, y + 205, 470 * .62, 10, 5); sctx.fillStyle = C.blue; sctx.fill();
+  text(sctx, 'Ders materyalleri', 44, y + 340, 34, 700, '#111', 'left', -0.02);
+  text(sctx, '3 dosya', SW - 44, y + 340, 28, 500, '#7A7A82', 'right', 0);
+  FILES.forEach(([ext, col, name, size], i) => {
+    const rp = E.outCubic(prog(t, 16.45 + i * .09, 16.85 + i * .09));
+    if (rp <= 0) return;
+    const ry = y + 380 + i * 150 + (1 - rp) * 40;
+    sctx.save(); sctx.globalAlpha = rp;
+    rrect(sctx, 44, ry, SW - 88, 130, 30); sctx.fillStyle = '#F4F5F8'; sctx.fill();
+    rrect(sctx, 70, ry + 22, 86, 86, 22); sctx.fillStyle = col; sctx.fill();
+    text(sctx, ext, 113, ry + 76, 26, 800, '#fff', 'center', 0.02);
+    text(sctx, name, 184, ry + 60, 31, 600, '#111', 'left', -0.01);
+    text(sctx, size, 184, ry + 100, 26, 400, '#8A8A90', 'left', 0);
+    // indirme düğmesi
+    const bx = 820, byy = ry + 65;
+    const dl = i === 0 ? prog(t, 17.1, 17.55) : 0, done = i === 0 && t > 17.55;
+    circle(sctx, bx, byy, 38, done ? C.green : '#E4E9FB');
+    if (dl > 0 && !done) {
+      sctx.lineWidth = 6; sctx.strokeStyle = C.blue; sctx.lineCap = 'round';
+      sctx.beginPath(); sctx.arc(bx, byy, 30, -Math.PI / 2, -Math.PI / 2 + dl * Math.PI * 2); sctx.stroke();
+    }
+    sctx.lineWidth = 5; sctx.lineCap = 'round'; sctx.lineJoin = 'round';
+    if (done) {
+      const k = E.outBack(prog(t, 17.55, 17.75), 3);
+      sctx.save(); sctx.translate(bx, byy); sctx.scale(k, k); sctx.strokeStyle = '#fff';
+      sctx.beginPath(); sctx.moveTo(-13, 0); sctx.lineTo(-3, 10); sctx.lineTo(14, -10); sctx.stroke(); sctx.restore();
+    } else {
+      sctx.strokeStyle = C.blue;
+      sctx.beginPath(); sctx.moveTo(bx, byy - 14); sctx.lineTo(bx, byy + 12); sctx.moveTo(bx - 11, byy + 2); sctx.lineTo(bx, byy + 13); sctx.lineTo(bx + 11, byy + 2); sctx.stroke();
+    }
+    sctx.restore();
+  });
+  if (t > 17.55) {
+    const k = E.outBack(prog(t, 17.55, 17.8), 2) * (1 - prog(t, 18.3, 18.5));
+    sctx.save(); sctx.globalAlpha = clamp(k);
+    const tw = measure(sctx, 'İndirildi', 28, 600, 0);
+    rrect(sctx, 820 - tw / 2 - 24, y + 300 - 44 + (1 - k) * 20, tw + 48, 56, 28); sctx.fillStyle = '#111'; sctx.fill();
+    text(sctx, 'İndirildi', 820, y + 300 - 6 + (1 - k) * 20, 28, 600, '#fff', 'center', 0);
+    sctx.restore();
+  }
+}
+
+// ---------- arka plan ----------
+function background(t) {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  const blobs = [[.15, .2, C.blue2, .22], [.9, .75, C.purple, .18], [.6, .1, '#8FD3FF', .16]];
+  blobs.forEach(([bx, by, col, a], i) => {
+    const x = (bx + Math.sin(t * .25 + i * 2) * .06) * W, y = (by + Math.cos(t * .21 + i) * .05) * H;
+    const r = Math.max(W, H) * .55;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, hexA(col, a)); g.addColorStop(1, hexA(col, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  });
+}
+function hexA(h, a) { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; }
+
+// ---------- başlıklar ----------
+const CAPS = [
+  [3.0, 4.4, 'ders takibi', ['Tüm derslerin', 'tek ekranda.']],
+  [4.4, 5.9, 'hatırlatmalar', ['Ders saatini', 'hiç kaçırma.']],
+  [5.9, 8.2, 'mobil yoklama', ['İmza yok,', 'konumla yoklama.']],
+  [8.2, 10.15, 'anında onay', ['Sınıfa geldin,', 'yoklaman alındı.']],
+  [10.15, 14.5, 'mesajlaşma', ['Hocanla ve bizimle', 'anında konuş.']],
+  [14.5, 16.3, 'online dersler', ['Ders tekrarları', 'her an yanında.']],
+  [16.3, 17.95, 'materyaller', ['Ders içerikleri', 'tek dokunuşta.']],
+];
+function captions(t) {
+  const size = V ? 80 * u : 84 * u, lh = size * 1.06;
+  const x = V ? 76 * u : 120 * u;
+  const ey = V ? H * 0.118 : H * 0.36;
+  for (const [a, b, eb, lines] of CAPS) {
+    if (t < a - .01 || t > b + .01) continue;
+    const last = b > 17.9;
+    const o = last ? E.inCubic(prog(t, b - .3, b)) : E.inCubic(prog(t, b - .22, b));
+    ctx.save(); ctx.globalAlpha = 1 - o; ctx.translate(0, -o * 40 * u);
+    // eyebrow
+    const ep = E.outExpo(prog(t, a, a + .6));
+    const es = 26 * u, ew = measure(ctx, eb, es, 600, 0.02) + es * 1.4;
+    ctx.save(); ctx.globalAlpha *= ep;
+    rrect(ctx, x, ey - es * 1.25 + (1 - ep) * 20 * u, ew * lerp(.7, 1, ep), es * 1.8, es * .9);
+    ctx.fillStyle = hexA(C.blue, .12); ctx.fill();
+    ctx.restore();
+    reveal(ctx, eb, x + es * .7, ey + (1 - ep) * 20 * u, es, 600, C.blue, ep, { track: 0.02 });
+    lines.forEach((s, i) => {
+      const p = E.outExpo(prog(t, a + .06 + i * .08, a + .8 + i * .08));
+      reveal(ctx, s, x - 4 * u, ey + (V ? 106 : 116) * u + i * lh, size, 800, i ? C.blue : C.ink, p, { track: -0.04 });
+    });
+    ctx.restore();
+  }
+}
+
+// ---------- rozetler ----------
+const APPLE = new Path2D('M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701');
+const PLAY = new Path2D('M22.018 13.298l-3.919 2.218-3.515-3.493 3.543-3.521 3.891 2.202a1.49 1.49 0 0 1 0 2.594zM1.337.924a1.486 1.486 0 0 0-.112.568v21.017c0 .217.045.419.124.6l11.155-11.087L1.337.924zm12.207 10.065l3.258-3.238L3.45.195a1.466 1.466 0 0 0-.946-.179l11.04 10.973zm0 2.067l-11 10.933c.298.036.612-.016.906-.183l13.324-7.54-3.23-3.21z');
+function badge(x, y, w, h, kind, p) {
+  if (p <= 0) return;
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(lerp(.8, 1, p), lerp(.8, 1, p)); ctx.translate(-(x + w / 2), -(y + h / 2));
+  ctx.globalAlpha = clamp(p * 1.4);
+  rrect(ctx, x, y, w, h, h * .2); ctx.fillStyle = '#000'; ctx.fill();
+  ctx.lineWidth = 2 * u; ctx.strokeStyle = '#A6A6A6'; ctx.stroke();
+  const is = h * .5;
+  ctx.save(); ctx.translate(x + h * .28, y + (h - is) / 2); ctx.scale(is / 24, is / 24); ctx.fillStyle = '#fff';
+  ctx.fill(kind === 'apple' ? APPLE : PLAY); ctx.restore();
+  const tx = x + h * .28 + is + h * .16;
+  const top = kind === 'apple' ? "App Store'dan" : 'HEMEN ALIN';
+  const big = kind === 'apple' ? 'İndirin' : 'Google Play';
+  text(ctx, top, tx, y + h * .4, h * .19, 500, '#fff', 'left', kind === 'apple' ? 0 : 0.04);
+  text(ctx, big, tx, y + h * .8, h * .34, 600, '#fff', 'left', -0.02);
+  ctx.restore();
+}
+
+// ---------- intro / outro konumları ----------
+function introLayout() {
+  return V
+    ? { ix: cx, iy: H * 0.4, is: 300 * u, wy: H * 0.4 + 280 * u, ws: 120 * u, ty: H * 0.4 + 360 * u }
+    : { ix: cx, iy: H * 0.36, is: 240 * u, wy: H * 0.36 + 230 * u, ws: 104 * u, ty: H * 0.36 + 300 * u };
+}
+
+function drawScene(t) {
+  ctx.save(); ctx.letterSpacing = '0px';
+  background(t);
+  const base = phoneBase();
+
+  // telefon konumu: yüksel, kamera yaklaş, çık
+  const rise = E.outQuint(prog(t, 1.9, 2.75));
+  const fall = E.inBack(prog(t, 18.0, 18.55), 1.3);
+  let px = base.x, py = base.y + (1 - rise) * H * 0.9 + fall * H * 0.95 + Math.sin(t * 1.3) * 5 * u;
+  let k = base.k;
+  let rot = (1 - rise) * 0.12 + Math.sin(t * .9) * 0.006 - fall * 0.1;
+  // kamera: ilgi noktasına yaklaş (odak ekranda sabit kalır)
+  const zooms = [[7.45, 7.8, 9.05, 9.4, 1.14, 461, 1180], [10.9, 11.25, 13.95, 14.25, 1.12, 460, 1640]];
+  for (let [a, b, c, d, z, fx, fy] of zooms) {
+    // dikeyde üst kenar sabit kalır (başlığın üstüne binmesin); sohbette yakınlaşma yok
+    if (V) { if (fy > 1500) continue; fy = 0; }
+    const w = win(t, a, b, c, d);
+    if (w <= 0) continue;
+    const zz = 1 + (z - 1) * w;
+    const fvx = px + (fx - SW / 2) * k, fvy = py + (fy - SH / 2) * k;
+    px = fvx + (px - fvx) * zz; py = fvy + (py - fvy) * zz; k *= zz;
+  }
+  PH = { x: px, y: py, k, rot };
+
+  if (t > 1.85 && t < 18.6) {
+    drawScreen(t);
+    drawPhone();
+  }
+  if (t > 2.9 && t < 18.1) captions(t);
+
+  // intro: logo → telefonun açılış ekranına uçar
+  const L = introLayout();
+  if (t < 2.74) {
+    const fly = E.inOutCubic(prog(t, 2.0, 2.72));
+    const [tix, tiy] = screenToVideo(ICON.x + ICON.s / 2, ICON.y + ICON.s / 2);
+    const tis = ICON.s * PH.k;
+    const [twx, twy] = screenToVideo(461, 1098);
+    const tws = 70 * PH.k;
+    const pop = E.outBack(prog(t, 0.1, 0.75), 1.8);
+    const ix = lerp(L.ix, tix, fly), iy = lerp(L.iy, tiy, fly), is = lerp(L.is, tis, fly) * pop;
+    ctx.save(); ctx.translate(ix, iy); ctx.rotate((1 - pop) * -0.3); ctx.translate(-ix, -iy);
+    drawIcon(ctx, ix, iy, is);
+    ctx.restore();
+    const wp = E.outExpo(prog(t, .45, 1.2));
+    wordmark(ctx, lerp(L.ix, twx, fly), lerp(L.wy, twy, fly), lerp(L.ws, tws, fly), 1, wp);
+    const tp = E.outExpo(prog(t, .9, 1.6)) * (1 - E.outCubic(prog(t, 1.9, 2.2)));
+    reveal(ctx, 'öğrenci takip ve eğitim otomasyonu', cx, L.ty, 34 * u, 500, C.gray, tp, { align: 'center', track: 0 });
+  }
+
+  // outro
+  if (t > 18.2) {
+    const O = V ? { iy: H * 0.33, is: 260 * u, wy: H * 0.33 + 250 * u, ws: 116 * u } : { iy: H * 0.26, is: 200 * u, wy: H * 0.26 + 196 * u, ws: 96 * u };
+    const ip = E.outBack(prog(t, 18.25, 18.85), 1.8);
+    ctx.save(); ctx.translate(cx, O.iy); ctx.rotate((1 - ip) * 0.3); ctx.translate(-cx, -O.iy);
+    drawIcon(ctx, cx, O.iy, O.is * ip);
+    ctx.restore();
+    wordmark(ctx, cx, O.wy, O.ws, 1, E.outExpo(prog(t, 18.45, 19.2)));
+    const tp = E.outExpo(prog(t, 18.75, 19.4));
+    const ts = V ? 36 * u : 32 * u;
+    reveal(ctx, 'Öğrenci takip ve eğitim otomasyonu', cx, O.wy + (V ? 80 : 68) * u, ts, 500, C.gray, tp, { align: 'center', track: -0.01 });
+    const hp = E.outExpo(prog(t, 19.0, 19.6));
+    reveal(ctx, 'Hemen indir', cx, O.wy + (V ? 250 : 190) * u, V ? 64 * u : 56 * u, 800, C.ink, hp, { align: 'center', track: -0.04 });
+    const bh = V ? 104 * u : 92 * u, bw = bh * 3.1, gap = 24 * u;
+    const by = O.wy + (V ? 310 : 236) * u;
+    badge(cx - bw - gap / 2, by, bw, bh, 'apple', E.outBack(prog(t, 19.2, 19.65), 2));
+    badge(cx + gap / 2, by, bw, bh, 'play', E.outBack(prog(t, 19.32, 19.77), 2));
+  }
+  ctx.restore();
+}
+
+// hareket bulanıklığı
+const SAMPLES = RENDER ? (FPS >= 60 ? 5 : 8) : 1;
+function renderAt(t) {
+  t = clamp(t, 0, DUR - 1e-4);
+  if (SAMPLES === 1) { drawScene(t); octx.globalAlpha = 1; octx.drawImage(buf, 0, 0); return; }
+  const sh = 0.5 / FPS;
+  for (let s = 0; s < SAMPLES; s++) {
+    drawScene(clamp(t + (s / (SAMPLES - 1) - .5) * sh, 0, DUR - 1e-4));
+    octx.globalAlpha = 1 / (s + 1); octx.drawImage(buf, 0, 0);
+  }
+  octx.globalAlpha = 1;
+}
+window.renderAt = renderAt;
+
+const faces = [
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-wght-normal.woff2) format("woff2")', { weight: '100 900', unicodeRange: 'U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD' }),
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-ext-wght-normal.woff2) format("woff2")', { weight: '100 900', unicodeRange: 'U+0100-0130,U+0132-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+1E00-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF' }),
+];
+window.ready = Promise.all([...faces.map(f => f.load()), ...names.map(loadImg)]).then(res => {
+  res.slice(0, 2).forEach(f => document.fonts.add(f));
+  COL = {
+    chatBg: sample(IMG.chat, 860, 1100), input: sample(IMG.chat, 700, 1850),
+    bubble: sample(IMG.chat, 640, 520), blue: sample(IMG.chat, 832, 1822),
+  };
+  return document.fonts.load('800 100px Inter', 'ğşıİ');
+}).then(() => {
+  if (!RENDER) {
+    const t0 = performance.now();
+    const loop = now => { renderAt(((now - t0) / 1000) % DUR); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  }
+  return true;
+});
+</script>
+</body>
+</html>
