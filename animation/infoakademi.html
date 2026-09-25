@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>infoakademi motion</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  html, body { margin: 0; background: #000; height: 100%; }
+  body { display: grid; place-items: center; }
+  canvas { max-width: 100vw; max-height: 100vh; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * infoakademi — 15 sn hareketli grafik (online grafik tasarım eğitimi)
+ * Tamamen zamana bağlı (deterministik) çizilir: renderAt(t) herhangi bir anı çizer.
+ * ?w=1080&h=1920  -> dikey (Reels)     ?w=1920&h=1080 -> yatay (X)
+ * ?render=1       -> otomatik oynatma kapalı (render.mjs kare kare çeker)
+ * Sahne kesmeleri 120 BPM ızgarasında: her sahne 2.5 sn (5 vuruş).
+ */
+const Q = new URLSearchParams(location.search);
+const W = +Q.get('w') || 1080, H = +Q.get('h') || 1920;
+const RENDER = Q.has('render');
+const DUR = 15;
+const V = H > W;                      // dikey mi
+const u = Math.min(W, H) / 1080;      // ölçek birimi
+const cx = W / 2, cy = H / 2;
+const DIAG = Math.hypot(W, H);
+const M = 72 * u;                     // kenar boşluğu
+
+const C = {
+  ink: '#0D0D10', cream: '#F2EFE8', coral: '#FF5A36', lime: '#C6F432',
+  blue: '#3D3BF3', pink: '#FF4FA3', yellow: '#FFC83D', cyan: '#3DD6F5', magenta: '#FF2E88'
+};
+
+const out = document.getElementById('c');
+out.width = W; out.height = H;
+const octx = out.getContext('2d');
+const buf = document.createElement('canvas');
+buf.width = W; buf.height = H;
+const ctx = buf.getContext('2d');
+
+// ---------- yardımcılar ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, p) => a + (b - a) * p;
+const E = {
+  outExpo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  inExpo: x => x <= 0 ? 0 : Math.pow(2, 10 * x - 10),
+  inOutExpo: x => x <= 0 ? 0 : x >= 1 ? 1 : x < .5 ? Math.pow(2, 20 * x - 10) / 2 : (2 - Math.pow(2, -20 * x + 10)) / 2,
+  outCubic: x => 1 - Math.pow(1 - x, 3),
+  inCubic: x => x * x * x,
+  outQuart: x => 1 - Math.pow(1 - x, 4),
+  outQuint: x => 1 - Math.pow(1 - x, 5),
+  inOutCubic: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  inOutQuart: x => x < .5 ? 8 * x ** 4 : 1 - Math.pow(-2 * x + 2, 4) / 2,
+  outBack: (x, s = 1.70158) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2),
+  inBack: (x, s = 1.70158) => (s + 1) * x * x * x - s * x * x,
+  outBounce: x => {
+    const n = 7.5625, d = 2.75;
+    if (x < 1 / d) return n * x * x;
+    if (x < 2 / d) return n * (x -= 1.5 / d) * x + .75;
+    if (x < 2.5 / d) return n * (x -= 2.25 / d) * x + .9375;
+    return n * (x -= 2.625 / d) * x + .984375;
+  },
+  outElastic: x => x <= 0 ? 0 : x >= 1 ? 1 : Math.pow(2, -10 * x) * Math.sin((x * 10 - .75) * (2 * Math.PI) / 3) + 1,
+};
+
+function font(size, weight = 700) { ctx.font = `${Math.round(weight)} ${size}px Inter`; }
+function setTrack(em, size) { ctx.letterSpacing = `${em * size}px`; }
+function measure(str, size, weight = 700, track = 0) {
+  font(size, weight); setTrack(track, size);
+  const w = ctx.measureText(str).width;
+  setTrack(0, size);
+  return w;
+}
+function text(str, x, y, size, weight, color, align = 'left', track = -0.03, alpha = 1) {
+  ctx.save();
+  font(size, weight); setTrack(track, size);
+  ctx.textAlign = align; ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = color; ctx.globalAlpha *= alpha;
+  ctx.fillText(str, x, y);
+  ctx.restore();
+}
+// maskeli satır açılışı: yazı kendi taban çizgisinin altından yukarı kayar
+function reveal(str, x, y, size, weight, color, p, o = {}) {
+  if (p <= 0) return;
+  const align = o.align || 'left', track = o.track ?? -0.035;
+  ctx.save();
+  const w = measure(str, size, weight, track);
+  let x0 = align === 'center' ? x - w / 2 : align === 'right' ? x - w : x;
+  ctx.beginPath();
+  ctx.rect(x0 - size * .2, y - size * 1.02, w + size * .4, size * 1.3);
+  ctx.clip();
+  const dy = (1 - p) * size * 1.25;
+  font(size, weight); setTrack(track, size);
+  ctx.textAlign = align;
+  ctx.globalAlpha *= (o.alpha ?? 1);
+  if (o.stroke) {
+    ctx.lineWidth = o.stroke; ctx.strokeStyle = color; ctx.lineJoin = 'round';
+    ctx.strokeText(str, x, y + dy);
+  } else {
+    ctx.fillStyle = color;
+    ctx.fillText(str, x, y + dy);
+  }
+  ctx.restore();
+}
+function circle(x, y, r, fill) { if (r <= 0) return; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill(); }
+function rrect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+function bg(color) { ctx.fillStyle = color; ctx.fillRect(0, 0, W, H); }
+
+// tasarım programı imleçleri
+function arrowCursor(x, y, s = 1, alpha = 1) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.translate(x, y); ctx.scale(s * u * 1.5, s * u * 1.5); ctx.globalAlpha *= alpha;
+  ctx.beginPath();
+  ctx.moveTo(0, 0); ctx.lineTo(0, 24); ctx.lineTo(6, 18.5); ctx.lineTo(10.5, 28); ctx.lineTo(14.5, 26.2);
+  ctx.lineTo(10.2, 17); ctx.lineTo(17.5, 17); ctx.closePath();
+  ctx.fillStyle = '#fff'; ctx.fill();
+  ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.strokeStyle = '#000'; ctx.stroke();
+  ctx.restore();
+}
+function penCursor(x, y, s = 1, alpha = 1) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(-0.55); ctx.scale(s * u * 1.6, s * u * 1.6); ctx.globalAlpha *= alpha;
+  ctx.beginPath();
+  ctx.moveTo(0, 0); ctx.lineTo(-11, -20); ctx.lineTo(-8, -34); ctx.lineTo(8, -34); ctx.lineTo(11, -20); ctx.closePath();
+  ctx.fillStyle = C.cream; ctx.fill();
+  ctx.lineWidth = 1.8; ctx.strokeStyle = C.ink; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -15); ctx.stroke();
+  ctx.beginPath(); ctx.arc(0, -17, 3, 0, Math.PI * 2); ctx.fillStyle = C.ink; ctx.fill();
+  ctx.fillStyle = C.cream; ctx.fillRect(-9, -41, 18, 6); ctx.strokeRect(-9, -41, 18, 6);
+  ctx.restore();
+}
+function selectionBox(x, y, w, h, color, alpha = 1, hs = 14) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha *= alpha;
+  ctx.lineWidth = 2.5 * u; ctx.strokeStyle = color; ctx.strokeRect(x, y, w, h);
+  const s = hs * u;
+  for (const [px, py] of [[0, 0], [.5, 0], [1, 0], [0, .5], [1, .5], [0, 1], [.5, 1], [1, 1]]) {
+    ctx.fillStyle = '#fff'; ctx.fillRect(x + px * w - s / 2, y + py * h - s / 2, s, s);
+    ctx.strokeRect(x + px * w - s / 2, y + py * h - s / 2, s, s);
+  }
+  ctx.restore();
+}
+function tag(str, x, y, bgc, fg, size = 20 * u, alpha = 1) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha *= alpha;
+  const w = measure(str, size, 600, 0) + size * 1.1, h = size * 1.7;
+  rrect(x, y - h / 2, w, h, size * .35); ctx.fillStyle = bgc; ctx.fill();
+  text(str, x + size * .55, y + size * .36, size, 600, fg, 'left', 0);
+  ctx.restore();
+}
+
+// ---------- logo yerleşimi (S5 ve S6 ortak) ----------
+const LOGO = 'ınfoakademı';   // noktasız ı: noktaları biz çiziyoruz
+let _logo;
+function logoLayout() {
+  if (_logo) return _logo;
+  const track = -0.045, weight = 800;
+  const per = measure(LOGO, 100, weight, 0) / 100 + track * (LOGO.length - 1);
+  const size = Math.min(V ? 200 * u : 230 * u, (V ? 0.84 : 0.62) * W / per);
+  const total = per * size;
+  const x0 = cx - total / 2;
+  const base = V ? H * 0.5 : H * 0.53;
+  const chars = [...LOGO].map((ch, i) => {
+    const pre = measure(LOGO.slice(0, i), size, weight, 0) + track * size * i;
+    const w = measure(ch, size, weight, 0);
+    return { ch, x: x0 + pre + w / 2, w };
+  });
+  const dotR = size * 0.1;
+  const dotY = base - size * 0.775;
+  _logo = { size, weight, x0, total, base, chars, dotR, dotY, track };
+  return _logo;
+}
+
+// ================= SAHNE 1 — çizgi (0 – 2.5) =================
+const S1pts = V
+  ? [[-.08, .43], [.3, .29], [.64, .47], [1.08, .31]]
+  : [[-.05, .52], [.3, .25], [.62, .5], [1.05, .22]];
+let S1;
+function buildS1() {
+  const P = S1pts.map(([x, y]) => [x * W, y * H]);
+  const k = 1.55 / 6;
+  const segs = [], handles = [];
+  for (let i = 0; i < P.length - 1; i++) {
+    const p0 = P[Math.max(0, i - 1)], p1 = P[i], p2 = P[i + 1], p3 = P[Math.min(P.length - 1, i + 2)];
+    const c1 = [p1[0] + (p2[0] - p0[0]) * k, p1[1] + (p2[1] - p0[1]) * k];
+    const c2 = [p2[0] - (p3[0] - p1[0]) * k, p2[1] - (p3[1] - p1[1]) * k];
+    segs.push([p1, c1, c2, p2]);
+  }
+  for (let i = 0; i < P.length; i++) {
+    const hin = i > 0 ? segs[i - 1][2] : null, hout = i < segs.length ? segs[i][1] : null;
+    handles.push({ p: P[i], hin, hout });
+  }
+  const pts = [], lens = [0];
+  for (const [a, b, c, d] of segs) {
+    for (let j = (pts.length ? 1 : 0); j <= 160; j++) {
+      const s = j / 160, m = 1 - s;
+      pts.push([
+        m * m * m * a[0] + 3 * m * m * s * b[0] + 3 * m * s * s * c[0] + s * s * s * d[0],
+        m * m * m * a[1] + 3 * m * m * s * b[1] + 3 * m * s * s * c[1] + s * s * s * d[1]]);
+    }
+  }
+  for (let i = 1; i < pts.length; i++) lens.push(lens[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  // her anchor'un yol üzerindeki uzunluğu
+  const anchorLen = handles.map((_, i) => lens[Math.min(i * 160, lens.length - 1)]);
+  S1 = { segs, handles, pts, lens, total: lens[lens.length - 1], anchorLen };
+}
+
+function scene1(t) {
+  if (!S1) buildS1();
+  bg(C.ink);
+  const out = prog(t, 2.02, 2.5);
+  const fadeOut = 1 - E.outCubic(prog(t, 2.0, 2.3));
+
+  // ızgara
+  ctx.save();
+  ctx.strokeStyle = C.cream; ctx.lineWidth = 1 * u;
+  const sp = 90 * u;
+  for (let k = -12; k <= 12; k++) {
+    const x = cx + k * sp;
+    if (x < -2 || x > W + 2) continue;
+    const e = E.outExpo(prog(t, 0.02 + Math.abs(k) * 0.02, 1.0 + Math.abs(k) * 0.02));
+    ctx.globalAlpha = 0.07 * fadeOut; ctx.beginPath(); ctx.moveTo(x, cy - e * H / 2); ctx.lineTo(x, cy + e * H / 2); ctx.stroke();
+  }
+  for (let k = -12; k <= 12; k++) {
+    const y = cy + k * sp;
+    if (y < -2 || y > H + 2) continue;
+    const e = E.outExpo(prog(t, 0.02 + Math.abs(k) * 0.02, 1.0 + Math.abs(k) * 0.02));
+    ctx.globalAlpha = 0.07 * fadeOut; ctx.beginPath(); ctx.moveTo(cx - e * W / 2, y); ctx.lineTo(cx + e * W / 2, y); ctx.stroke();
+  }
+  ctx.restore();
+
+  // merkezde ilk nokta
+  const dotIn = E.outBack(prog(t, 0, .35)) * (1 - prog(t, .3, .45));
+  if (dotIn > 0) circle(S1.pts[0][0] < 0 ? cx : cx, cy, 10 * u * dotIn, C.coral);
+
+  // kalem yolu
+  const f = E.inOutCubic(prog(t, 0.22, 1.55));
+  const L = f * S1.total;
+  let n = 0; while (n < S1.lens.length - 1 && S1.lens[n] < L) n++;
+  const grow = E.inCubic(out);
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = C.cream;
+  ctx.lineWidth = 10 * u + grow * DIAG * 1.25;
+  ctx.beginPath();
+  for (let i = 0; i <= n; i++) i ? ctx.lineTo(...S1.pts[i]) : ctx.moveTo(...S1.pts[i]);
+  if (n > 0) ctx.stroke();
+  ctx.restore();
+
+  // anchor + tutamaçlar
+  const hs = 1 - E.inBack(prog(t, 1.95, 2.2));
+  S1.handles.forEach((h, i) => {
+    const tr = 0.22 + 1.33 * invInOutCubic(S1.anchorLen[i] / S1.total);
+    const a = E.outBack(prog(t, tr, tr + .3), 3) * hs;
+    if (a <= 0) return;
+    const hl = E.outBack(prog(t, tr + .05, tr + .45)) * hs;
+    const [x, y] = h.p;
+    ctx.save();
+    ctx.strokeStyle = C.coral; ctx.lineWidth = 2 * u;
+    for (const hp of [h.hin, h.hout]) {
+      if (!hp) continue;
+      const hx = lerp(x, hp[0], hl * .8), hy = lerp(y, hp[1], hl * .8);
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(hx, hy); ctx.stroke();
+      circle(hx, hy, 7 * u * clamp(hl), C.coral);
+    }
+    const s = 22 * u * a;
+    ctx.fillStyle = C.ink; ctx.fillRect(x - s / 2, y - s / 2, s, s);
+    ctx.lineWidth = 3.5 * u; ctx.strokeStyle = C.coral; ctx.strokeRect(x - s / 2, y - s / 2, s, s);
+    ctx.restore();
+  });
+
+  // kalem ucu + koordinat
+  const tip = S1.pts[n];
+  const penA = prog(t, .2, .35) * (1 - prog(t, 1.6, 1.85));
+  if (penA > 0 && tip && tip[0] > 20 * u) {
+    penCursor(tip[0] + 6 * u, tip[1] - 2 * u, 1, penA);
+    tag(`x ${Math.round(tip[0] / u)}  y ${Math.round(tip[1] / u)}`, tip[0] + 34 * u, tip[1] + 44 * u, C.coral, C.ink, 18 * u, penA);
+  }
+
+  // başlık
+  const lines = [['her tasarım', C.cream], ['bir çizgiyle', C.coral], ['başlar.', C.cream]];
+  const size = V ? 132 * u : 112 * u, lh = size * 1.0;
+  const y0 = V ? H * 0.66 : H * 0.63;
+  const textOut = E.inCubic(prog(t, 1.95, 2.25));
+  lines.forEach(([s, c], i) => {
+    const p = E.outExpo(prog(t, .55 + i * .12, 1.35 + i * .12));
+    ctx.save(); ctx.translate(0, -textOut * 60 * u); ctx.globalAlpha = 1 - textOut;
+    reveal(s, M, y0 + i * lh, size, 800, c, p);
+    ctx.restore();
+  });
+}
+// tersi (anchor'a varış zamanını bulmak için)
+function invInOutCubic(y) { let a = 0, b = 1; for (let i = 0; i < 30; i++) { const m = (a + b) / 2; E.inOutCubic(m) < y ? a = m : b = m; } return (a + b) / 2; }
+
+// ================= SAHNE 2 — tipografi (2.5 – 5.0) =================
+function scene2(t) {
+  const l = t - 2.5;
+  bg(C.cream);
+  const size = V ? 440 * u : 560 * u;
+  const ax = V ? cx - 60 * u : W * 0.62, base = V ? H * 0.555 : H * 0.74;
+  // ağırlık eğrisi
+  const w = 100 + 800 * E.inOutQuart(prog(l, 0.15, 1.15)) - 550 * E.inOutQuart(prog(l, 1.45, 2.05));
+
+  // kılavuz çizgileri
+  const guides = [[0, 'taban çizgisi'], [0.546, 'x-yüksekliği'], [0.727, 'büyük harf']];
+  guides.forEach(([m, label], i) => {
+    const p = E.outExpo(prog(l, 0.05 + i * .1, 0.9 + i * .1));
+    const y = base - m * size;
+    ctx.save();
+    ctx.strokeStyle = C.blue; ctx.lineWidth = 2 * u; ctx.globalAlpha = 0.9;
+    if (i) ctx.setLineDash([10 * u, 8 * u]);
+    const gx0 = V ? 0 : W * 0.42;
+    ctx.beginPath(); ctx.moveTo(gx0, y); ctx.lineTo(lerp(gx0, W, p), y); ctx.stroke();
+    ctx.restore();
+    text(label, W - M, y - 12 * u, 22 * u, 600, C.blue, 'right', 0, prog(l, .4 + i * .1, .7 + i * .1));
+  });
+
+  // Aa
+  const letters = ['A', 'a'];
+  font(size, w);
+  const wA = measure('A', size, w, -0.02), wa = measure('a', size, w, -0.02);
+  const tw = wA + wa, left = ax - tw / 2;
+  letters.forEach((ch, i) => {
+    const p = E.outExpo(prog(l, 0.0 + i * .08, 0.9 + i * .08));
+    const x = i ? left + wA + wa / 2 : left + wA / 2;
+    reveal(ch, x, base, size, w, C.ink, p, { align: 'center', track: 0 });
+  });
+  // seçim kutusu
+  const sb = prog(l, .45, .6) * (1 - prog(l, 2.1, 2.3));
+  selectionBox(left - 24 * u, base - size * .76, tw + 48 * u, size * .76 + 24 * u, C.blue, sb);
+  tag(`Inter  ·  ${Math.round(w)}`, left - 24 * u, base - size * .76 - 34 * u, C.blue, '#fff', 20 * u, sb);
+
+  // başlık + slider
+  const tsize = V ? 140 * u : 128 * u;
+  const tx = M, ty = V ? H * 0.205 : H * 0.36;
+  const tOut = E.inCubic(prog(l, 2.05, 2.35));
+  ctx.save(); ctx.globalAlpha = 1 - tOut;
+  reveal('tipografi', tx, ty, tsize, 800, C.ink, E.outExpo(prog(l, .15, 1.0)));
+  const sy = V ? H * 0.69 : H * 0.52;
+  const sw = V ? W - 2 * M : 520 * u;
+  const sp = E.outExpo(prog(l, .35, 1.1));
+  text('ağırlık', tx, sy - 26 * u, 26 * u, 600, C.ink, 'left', 0, sp);
+  text(`wght ${Math.round(w)}`, tx + sw, sy - 26 * u, 26 * u, 600, C.ink, 'right', 0, sp);
+  ctx.globalAlpha *= sp;
+  ctx.fillStyle = 'rgba(13,13,16,.15)'; rrect(tx, sy - 3 * u, sw * sp, 6 * u, 3 * u); ctx.fill();
+  const kx = tx + sw * sp * (w - 100) / 800;
+  ctx.fillStyle = C.ink; rrect(tx, sy - 3 * u, kx - tx, 6 * u, 3 * u); ctx.fill();
+  circle(kx, sy, 16 * u, C.blue);
+  circle(kx, sy, 6 * u, '#fff');
+  // stil satırı
+  const sy2 = sy + (V ? 90 * u : 80 * u);
+  const styles = ['Thin', 'Regular', 'Bold', 'Black'];
+  let sx = tx;
+  styles.forEach((s, i) => {
+    const wt = [100, 400, 700, 900][i];
+    const pp = E.outExpo(prog(l, .6 + i * .07, 1.3 + i * .07));
+    const active = Math.abs(w - wt) < 150;
+    reveal(s, sx, sy2, 38 * u, wt, active ? C.blue : C.ink, pp, { track: -0.01 });
+    sx += measure(s, 38 * u, wt, -0.01) + 34 * u;
+  });
+  ctx.restore();
+
+  // çizgili geçiş (renk sahnesine)
+  const N = 6, cols = [C.coral, C.yellow, C.lime, C.pink, C.blue, C.cyan];
+  for (let i = 0; i < N; i++) {
+    const t0 = 4.5 - 2.5 + i * .03;
+    const a = E.inOutCubic(prog(l, t0, t0 + .3));
+    const b = E.inOutCubic(prog(l, t0 + .07, t0 + .37));
+    const x = i * W / N;
+    if (a > 0) { ctx.fillStyle = cols[i]; ctx.fillRect(x - 1, 0, W / N + 2, H * a); }
+    if (b > 0) { ctx.fillStyle = C.ink; ctx.fillRect(x - 1, 0, W / N + 2, H * b); }
+  }
+}
+
+// ================= SAHNE 3 — renk (5.0 – 7.5) =================
+const PAL = [
+  { c: C.coral, hex: '#FF5A36', h: 12 }, { c: C.yellow, hex: '#FFC83D', h: 42 },
+  { c: C.lime, hex: '#C6F432', h: 76 }, { c: C.pink, hex: '#FF4FA3', h: -30 }, { c: C.blue, hex: '#3D3BF3', h: -119 }];
+const CYC0 = .45, CYC = .33;
+function scene3(t) {
+  const l = t - 5.0;
+  bg(C.ink);
+  const R = 330 * u, ring = 118 * u;
+  const wx = V ? cx : W * 0.66, wy = V ? H * 0.47 : H * 0.52;
+  const idx = clamp(Math.floor((l - CYC0) / CYC), -1, 4);
+  const exitP = prog(l, 2.02, 2.5);
+  const spin = -Math.PI / 2 - (1 - E.outExpo(prog(l, 0, 1.3))) * Math.PI * 1.1 + l * 0.12;
+
+  // renk çarkı
+  const segN = 24, gap = 0.035;
+  const ringOut = E.inCubic(prog(l, 1.95, 2.35));
+  for (let i = 0; i < segN; i++) {
+    const p = E.outExpo(prog(l, .02 + i * .022, .7 + i * .022));
+    if (p <= 0) continue;
+    const hue = i / segN * 360;
+    const a0 = spin + i / segN * Math.PI * 2 + gap, span = (Math.PI * 2 / segN - gap * 2) * p;
+    const rOut = R * lerp(.6, 1, E.outBack(prog(l, .02 + i * .022, .6 + i * .022))) + ringOut * 600 * u;
+    const rIn = Math.max(0, rOut - ring * p);
+    ctx.beginPath(); ctx.arc(wx, wy, rOut, a0, a0 + span); ctx.arc(wx, wy, rIn, a0 + span, a0, true); ctx.closePath();
+    ctx.fillStyle = `hsl(${hue},92%,${58}%)`; ctx.globalAlpha = 1 - ringOut; ctx.fill(); ctx.globalAlpha = 1;
+  }
+
+  // seçici
+  let ang;
+  if (idx < 0) ang = PAL[0].h;
+  else {
+    const pv = PAL[Math.max(0, idx - 1)].h, cur = PAL[idx].h;
+    ang = lerp(pv, cur, E.inOutCubic(prog(l, CYC0 + idx * CYC, CYC0 + idx * CYC + .25)));
+  }
+  const sa = spin + (ang / 360) * Math.PI * 2 + Math.PI / segN;
+  const selA = prog(l, .5, .7) * (1 - ringOut);
+  if (selA > 0) {
+    const sr = R - ring / 2;
+    const sxp = wx + Math.cos(sa) * sr, syp = wy + Math.sin(sa) * sr;
+    ctx.save(); ctx.globalAlpha = selA;
+    ctx.beginPath(); ctx.arc(sxp, syp, 40 * u, 0, Math.PI * 2);
+    ctx.lineWidth = 7 * u; ctx.strokeStyle = '#fff'; ctx.stroke();
+    ctx.lineWidth = 2 * u; ctx.strokeStyle = 'rgba(0,0,0,.35)';
+    ctx.beginPath(); ctx.arc(sxp, syp, 44 * u, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+  }
+
+  // merkez disk
+  const col = idx < 0 ? PAL[0].c : PAL[idx].c;
+  const pop = idx < 0 ? 0 : Math.sin(prog(l, CYC0 + idx * CYC, CYC0 + idx * CYC + .3) * Math.PI) * .07;
+  const d0 = (R - ring - 34 * u) * E.outBack(prog(l, .25, .8)) * (1 + pop);
+  const grow = E.inExpo(exitP);
+  circle(wx, wy, d0 + grow * DIAG, col);
+  if (grow > .99) return;
+
+  // başlık + hex + örnekler
+  ctx.save();
+  const tOut = E.inCubic(prog(l, 1.95, 2.25));
+  ctx.globalAlpha = 1 - tOut;
+  const tsize = V ? 150 * u : 140 * u;
+  reveal('renk', M, V ? H * 0.205 : H * 0.36, tsize, 800, C.cream, E.outExpo(prog(l, .1, .95)));
+  // hex
+  const hsize = V ? 76 * u : 68 * u;
+  const hx = V ? cx : M, hy = V ? H * 0.73 : H * 0.53;
+  const hexStr = idx < 0 ? PAL[0].hex : PAL[idx].hex;
+  const prevStr = idx <= 0 ? PAL[0].hex : PAL[idx - 1].hex;
+  const hw = measure('#FFFFFF', hsize, 700, 0.02);
+  let xx = V ? hx - hw / 2 : hx;
+  const hp = E.outExpo(prog(l, .3, 1.0));
+  const cellW = hw / 7;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(xx - 10 * u, hy - hsize * 1.0, hw + 20 * u, hsize * 1.25); ctx.clip();
+  for (let i = 0; i < 7; i++) {
+    const cxl = xx + cellW * (i + .5);
+    const cp = idx <= 0 ? 1 : E.outExpo(prog(l, CYC0 + idx * CYC + i * .018, CYC0 + idx * CYC + i * .018 + .35));
+    const enter = (1 - hp) * hsize * 1.3;
+    if (prevStr[i] !== hexStr[i] && cp < 1) {
+      text(prevStr[i], cxl, hy + enter - cp * hsize * 1.2, hsize, 700, C.cream, 'center', 0);
+      text(hexStr[i], cxl, hy + enter + (1 - cp) * hsize * 1.2, hsize, 700, C.cream, 'center', 0);
+    } else text(hexStr[i], cxl, hy + enter, hsize, 700, C.cream, 'center', 0);
+  }
+  ctx.restore();
+  // örnek daireler
+  const swR = 34 * u, gapS = 96 * u;
+  const rowW = gapS * 4;
+  const sy = V ? H * 0.79 : H * 0.66;
+  PAL.forEach((p, i) => {
+    const s = E.outBack(prog(l, .45 + i * .06, .85 + i * .06), 2.4);
+    const x = V ? cx - rowW / 2 + i * gapS : M + swR + i * gapS;
+    circle(x, sy, swR * s, p.c);
+    if (i === idx) {
+      ctx.beginPath(); ctx.arc(x, sy, swR + 10 * u, 0, Math.PI * 2);
+      ctx.strokeStyle = C.cream; ctx.lineWidth = 3 * u; ctx.stroke();
+    }
+  });
+  ctx.restore();
+}
+
+// ================= SAHNE 4 — kompozisyon (7.5 – 10.0) =================
+function scene4(t) {
+  const l = t - 7.5;
+  bg(C.blue);
+  const pw = V ? 700 * u : 540 * u, ph = pw * 1.25;
+  const pcx = V ? cx : W * 0.68, pcy = V ? H * 0.565 : H * 0.52;
+  const px = pcx - pw / 2, py = pcy - ph / 2;
+
+  // zoom çıkışı: afişin koyu bloğuna dal
+  const zp = E.inCubic(prog(l, 2.0, 2.5));
+  const Z = Math.exp(Math.log(60) * zp);
+  const tgx = px + pw * .8, tgy = py + ph * .9;
+  const scx = lerp(tgx, cx, zp), scy = lerp(tgy, cy, zp);
+
+  // başlık (zoom'dan etkilenmez, önce kaybolur)
+  const tOut = E.inCubic(prog(l, 1.9, 2.2));
+  ctx.save(); ctx.globalAlpha = 1 - tOut;
+  const tsize = V ? 124 * u : 112 * u;
+  reveal('kompozisyon', M, V ? H * 0.205 : H * 0.36, tsize, 800, C.cream, E.outExpo(prog(l, .1, .95)));
+  const sub = E.outExpo(prog(l, .35, 1.1));
+  if (!V) {
+    reveal('hizala. dengele. vurgula.', M, H * 0.36 + 70 * u, 34 * u, 500, C.cream, sub, { alpha: .8, track: -0.01 });
+  } else {
+    reveal('hizala. dengele. vurgula.', M, H * 0.205 + 72 * u, 38 * u, 500, C.cream, sub, { alpha: .8, track: -0.01 });
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(scx, scy); ctx.scale(Z, Z); ctx.translate(-tgx, -tgy);
+
+  // afiş girişi
+  const pin = E.outExpo(prog(l, 0, .8));
+  ctx.save();
+  ctx.translate(pcx, pcy + (1 - pin) * 180 * u); ctx.rotate((1 - pin) * -0.12); ctx.translate(-pcx, -pcy);
+  ctx.globalAlpha = clamp(pin * 2);
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,30,.35)'; ctx.shadowBlur = 60 * u; ctx.shadowOffsetY = 30 * u;
+  rrect(px, py, pw, ph, 8 * u); ctx.fillStyle = C.cream; ctx.fill();
+  ctx.restore();
+
+  // sütun ızgarası
+  const gA = E.outCubic(prog(l, .15, .5)) * (1 - prog(l, 1.4, 1.8));
+  if (gA > 0) {
+    const mg = pw * .07, cols = 6, gut = pw * .025;
+    const cw = (pw - 2 * mg - gut * (cols - 1)) / cols;
+    for (let i = 0; i < cols; i++) {
+      const hh = ph * E.outExpo(prog(l, .15 + i * .03, .7 + i * .03));
+      ctx.fillStyle = 'rgba(255,79,163,.10)'; ctx.globalAlpha = gA;
+      ctx.fillRect(px + mg + i * (cw + gut), py, cw, hh);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // üst yazılar
+  const ts = pw * .038;
+  const tp = E.outExpo(prog(l, .3, 1));
+  reveal('no. 01', px + pw * .07, py + ph * .075, ts, 700, C.ink, tp, { track: 0 });
+  reveal('2026', px + pw * .93, py + ph * .075, ts, 700, C.ink, tp, { align: 'right', track: 0 });
+
+  // lime kare
+  const lq = E.outBack(prog(l, .7, 1.2), 2);
+  if (lq > 0) {
+    ctx.save();
+    ctx.translate(px + pw * .22, py + ph * .31); ctx.rotate(lerp(Math.PI * .9, .2, E.outExpo(prog(l, .7, 1.3)))); ctx.scale(lq, lq);
+    const s = pw * .2; ctx.fillStyle = C.lime; ctx.fillRect(-s / 2, -s / 2, s, s);
+    ctx.restore();
+  }
+
+  // koyu blok
+  const bp = E.outExpo(prog(l, .5, 1.05));
+  const bx = px + pw * .07, by = py + ph * .64 + (1 - bp) * ph * .5, bw = pw * .86, bh = ph * .3;
+  if (bp > 0) {
+    ctx.save();
+    ctx.globalAlpha *= clamp(bp * 3);
+    ctx.fillStyle = C.ink; ctx.fillRect(bx, by, bw, bh);
+    const ls = pw * .115;
+    text('infoakademi', bx + pw * .05, by + bh * .43, ls, 800, C.cream, 'left', -0.045, 1);
+    text('grafik tasarım atölyesi', bx + pw * .05, by + bh * .62, pw * .04, 500, C.lime, 'left', 0, 1);
+    ctx.restore();
+  }
+
+  // mercan daire (sürüklenen)
+  const dp = prog(l, .3, 1.0);
+  const tx = px + pw * .5, ty = py + ph * .37;
+  const sx0 = px + pw * 1.25, sy0 = py + ph * .62;
+  const de = dp > .88 ? 1 : E.outQuart(dp / .88) * .985;
+  const dx = lerp(sx0, tx, de), dy = lerp(sy0, ty, de);
+  const r = pw * .25;
+  const cIn = E.outBack(prog(l, .22, .45), 2.5);
+  circle(dx, dy, r * cIn, C.coral);
+
+  // akıllı kılavuzlar
+  const gl = prog(l, .88, .95) * (1 - prog(l, 1.45, 1.7));
+  if (gl > 0) {
+    ctx.save(); ctx.globalAlpha = gl; ctx.strokeStyle = C.magenta; ctx.lineWidth = 2 * u;
+    ctx.beginPath(); ctx.moveTo(tx, py - 30 * u); ctx.lineTo(tx, py + ph + 30 * u); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(px - 30 * u, ty); ctx.lineTo(px + pw + 30 * u, ty); ctx.stroke();
+    ctx.restore();
+    tag('ortala', tx + 10 * u, py - 12 * u, C.magenta, '#fff', 18 * u, gl);
+  }
+  // seçim kutusu + imleç
+  const selA = prog(l, .3, .4) * (1 - prog(l, 1.5, 1.7));
+  selectionBox(dx - r, dy - r, 2 * r, 2 * r, C.blue, selA, 12);
+  const curA = prog(l, .25, .35) * (1 - prog(l, 1.25, 1.5));
+  const away = E.inOutCubic(prog(l, 1.05, 1.5));
+  arrowCursor(dx + r * .55 + away * 220 * u, dy + r * .4 + away * 260 * u, 1, curA);
+  if (dp > 0 && dp < 1) tag(`x ${Math.round((dx - px) / u)}  y ${Math.round((dy - py) / u)}`, dx + r * .55 + 40 * u, dy + r * .4 + 70 * u, C.ink, '#fff', 17 * u, selA);
+
+  ctx.restore();
+  ctx.restore();
+}
+
+// ================= SAHNE 5 — eğitim (10.0 – 12.5) =================
+function scene5(t) {
+  const l = t - 10.0;
+  bg(C.ink);
+  const ep = E.inExpo(prog(l, 1.95, 2.4));
+  // kayan arka yazı
+  ctx.save();
+  ctx.globalAlpha = 0.06 * (1 - ep);
+  const ms = V ? 360 * u : 330 * u;
+  const mw = measure('infoakademi ', ms, 800, -0.04);
+  const off = -((l * 220 * u) % mw) - mw * .3;
+  for (let k = 0; k < 4; k++) text('infoakademi', off + k * mw, V ? H * 0.93 : H * 0.97, ms, 800, C.cream, 'left', -0.04);
+  ctx.restore();
+
+  ctx.save();
+  const s = 1 - ep;
+  ctx.translate(cx, cy); ctx.scale(lerp(1, .6, ep), lerp(1, .6, ep)); ctx.translate(-cx, -cy);
+  ctx.globalAlpha = s;
+  const size = V ? 176 * u : 138 * u, lh = size * .98;
+  const y0 = V ? H * 0.245 : H * 0.29;
+  const L = [['online', C.cream, 0], ['grafik', C.lime, 0], ['tasarım', C.cream, 3.2 * u], ['eğitimi', C.cream, 0]];
+  L.forEach(([str, c, stroke], i) => {
+    const p = E.outExpo(prog(l, .0 + i * .09, .8 + i * .09));
+    reveal(str, M - 6 * u, y0 + i * lh, size, 800, c, p, { stroke: stroke || 0, track: -0.045 });
+  });
+  // özellik hapları
+  const feats = ['sıfırdan ileri seviyeye', 'canlı dersler + kayıtlar', 'gerçek portfolyo projeleri', 'sertifika'];
+  const fs = V ? 38 * u : 34 * u, fh = fs * 2.2;
+  const fx = V ? M : W * 0.575, fy = V ? H * 0.585 : H * 0.29 - size * .7;
+  feats.forEach((f, i) => {
+    const p = E.outExpo(prog(l, .55 + i * .12, 1.25 + i * .12));
+    if (p <= 0) return;
+    const y = fy + i * (fh + 18 * u);
+    const w = measure(f, fs, 500, -0.01) + fh + 36 * u;
+    ctx.save();
+    ctx.globalAlpha *= clamp(p * 1.5);
+    ctx.translate(-(1 - p) * 60 * u, 0);
+    rrect(fx, y, w * lerp(.6, 1, p), fh, fh / 2);
+    ctx.strokeStyle = 'rgba(242,239,232,.28)'; ctx.lineWidth = 2 * u; ctx.stroke();
+    const ccx = fx + fh / 2, ccy = y + fh / 2, cr = fh * .3;
+    circle(ccx, ccy, cr * E.outBack(prog(l, .65 + i * .12, .95 + i * .12), 3), C.lime);
+    const ck = prog(l, .8 + i * .12, 1.05 + i * .12);
+    if (ck > 0) {
+      ctx.beginPath(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.strokeStyle = C.ink; ctx.lineWidth = 3.5 * u;
+      const a = [ccx - cr * .45, ccy + cr * .02], b = [ccx - cr * .1, ccy + cr * .38], c = [ccx + cr * .5, ccy - cr * .35];
+      ctx.moveTo(...a);
+      if (ck < .4) ctx.lineTo(lerp(a[0], b[0], ck / .4), lerp(a[1], b[1], ck / .4));
+      else { ctx.lineTo(...b); const q = (ck - .4) / .6; ctx.lineTo(lerp(b[0], c[0], q), lerp(b[1], c[1], q)); }
+      ctx.stroke();
+    }
+    text(f, fx + fh + 8 * u, y + fh / 2 + fs * .36, fs, 500, C.cream, 'left', -0.01);
+    ctx.restore();
+  });
+  ctx.restore();
+
+  // logoya bağlanan nokta
+  const lg = logoLayout();
+  const dr = lg.dotR * E.outBack(prog(l, 2.1, 2.45), 2.5);
+  circle(cx, cy, dr, C.lime);
+}
+
+// ================= SAHNE 6 — logo (12.5 – 15.0) =================
+function scene6(t) {
+  const l = t - 12.5;
+  bg(C.ink);
+  const lg = logoLayout();
+  // hafif ışık
+  const gA = E.outCubic(prog(l, .3, 1.5));
+  if (gA > 0) {
+    const g = ctx.createRadialGradient(cx, lg.base - lg.size * .4, 0, cx, lg.base - lg.size * .4, Math.max(W, H) * .6);
+    g.addColorStop(0, `rgba(61,59,243,${.28 * gA})`); g.addColorStop(1, 'rgba(61,59,243,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  const drift = 1 + E.outCubic(prog(l, 0, 2.5)) * .025;
+  ctx.save();
+  ctx.translate(cx, lg.base - lg.size * .35); ctx.scale(drift, drift); ctx.translate(-cx, -(lg.base - lg.size * .35));
+
+  // harfler
+  lg.chars.forEach((c, i) => {
+    const t0 = .22 + i * .045;
+    const p = E.outExpo(prog(l, t0, t0 + .8));
+    const wgt = lerp(250, lg.weight, E.outCubic(prog(l, t0, t0 + .7)));
+    reveal(c.ch, c.x, lg.base, lg.size, wgt, C.cream, p, { align: 'center', track: 0 });
+  });
+
+  // birinci nokta: ortadan zıplar
+  const i1 = lg.chars[0], i2 = lg.chars[lg.chars.length - 1];
+  const jp = prog(l, 0, .5);
+  {
+    const e = E.inOutCubic(jp);
+    const x = lerp(cx, i1.x, e);
+    const y = lerp(cy, lg.dotY, e) - Math.sin(jp * Math.PI) * lg.size * 1.1;
+    const land = prog(l, .5, .8);
+    const sq = land > 0 ? Math.sin(land * Math.PI) * .3 * (1 - land) : 0;
+    ctx.save(); ctx.translate(x, y); ctx.scale(1 + sq, 1 - sq);
+    circle(0, 0, lg.dotR, C.lime);
+    ctx.restore();
+    ripple(i1.x, lg.dotY, l - .5, C.lime);
+  }
+  // ikinci nokta: yukarıdan düşer
+  {
+    const dp = prog(l, .95, 1.55);
+    if (dp > 0) {
+      const y = lerp(-lg.dotR * 2 - (lg.dotY), 0, E.outBounce(dp)) + lg.dotY;
+      circle(i2.x, y, lg.dotR, C.coral);
+    }
+    ripple(i2.x, lg.dotY, l - 1.24, C.coral);
+  }
+
+  // alt çizgi (kalem yolu hatırlatması)
+  const ulp = E.inOutCubic(prog(l, 1.05, 1.7));
+  const uy = lg.base + lg.size * .2;
+  if (ulp > 0) {
+    ctx.save();
+    ctx.strokeStyle = C.cream; ctx.globalAlpha = .9; ctx.lineWidth = 3 * u; ctx.lineCap = 'round';
+    const ux0 = lg.x0 + lg.size * .02, ux1 = lg.x0 + lg.total - lg.size * .02;
+    ctx.beginPath(); ctx.moveTo(ux0, uy); ctx.lineTo(lerp(ux0, ux1, ulp), uy); ctx.stroke();
+    const an = E.outBack(prog(l, 1.6, 1.85), 3) * (1 - prog(l, 2.1, 2.35));
+    if (an > 0) {
+      const s = 14 * u * an;
+      ctx.fillStyle = C.ink; ctx.strokeStyle = C.coral; ctx.lineWidth = 3 * u;
+      ctx.fillRect(ux1 - s / 2, uy - s / 2, s, s); ctx.strokeRect(ux1 - s / 2, uy - s / 2, s, s);
+    }
+    ctx.restore();
+  }
+  ctx.restore();
+
+  // slogan
+  const tgP = E.outExpo(prog(l, 1.25, 2.2));
+  const tgS = V ? 30 * u : 28 * u;
+  if (tgP > 0) {
+    const tr = lerp(.7, .26, tgP);
+    text('online grafik tasarım eğitimi', cx, uy + (V ? 90 : 80) * u, tgS, 600, C.cream, 'center', tr, tgP * .9);
+  }
+  // CTA
+  const cP = E.outBack(prog(l, 1.55, 2.0), 2);
+  if (cP > 0) {
+    const cs = V ? 30 * u : 26 * u;
+    const str = 'kayıtlar açık →';
+    const w = measure(str, cs, 700, -0.01) + cs * 1.8, h = cs * 2.1;
+    const y = uy + (V ? 170 : 150) * u;
+    ctx.save(); ctx.translate(cx, y + h / 2); ctx.scale(cP, cP); ctx.translate(-cx, -(y + h / 2));
+    rrect(cx - w / 2, y, w, h, h / 2); ctx.fillStyle = C.lime; ctx.fill();
+    text(str, cx, y + h / 2 + cs * .36, cs, 700, C.ink, 'center', -0.01);
+    ctx.restore();
+  }
+}
+function ripple(x, y, lt, color) {
+  if (lt <= 0 || lt > .9) return;
+  const p = E.outCubic(lt / .9);
+  ctx.save();
+  ctx.globalAlpha = (1 - p) * .8;
+  ctx.strokeStyle = color; ctx.lineWidth = 3 * u * (1 - p) + .5;
+  ctx.beginPath(); ctx.arc(x, y, 20 * u + p * 220 * u, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+// ================= HUD — her sahnede küçük harflerle infoakademi =================
+const NAMES = ['çizgi', 'tipografi', 'renk', 'kompozisyon', 'eğitim'];
+function hud(t) {
+  const a = E.outCubic(prog(t, .15, .6)) * (1 - E.inCubic(prog(t, 12.05, 12.4)));
+  if (a <= 0) return;
+  const si = clamp(Math.floor(t / 2.5), 0, 4);
+  const col = si === 1 ? C.ink : C.cream;
+  const acc = [C.coral, C.blue, C.lime, C.lime, C.lime][si];
+  const top = V ? 110 * u : M;
+  ctx.save(); ctx.globalAlpha = a;
+  // üst sol: logo yazısı
+  circle(M + 9 * u, top - 9 * u, 9 * u, acc);
+  text('infoakademi', M + 28 * u, top, 30 * u, 700, col, 'left', -0.03);
+  // üst sağ: bölüm
+  const loc = t - si * 2.5;
+  const np = E.outExpo(prog(loc, 0, .5));
+  ctx.save();
+  const nstr = `0${si + 1} — ${NAMES[si]}`;
+  const nw = measure(nstr, 24 * u, 600, 0);
+  ctx.beginPath(); ctx.rect(W - M - nw - 10 * u, top - 30 * u, nw + 20 * u, 40 * u); ctx.clip();
+  text(nstr, W - M, top + (1 - np) * 36 * u, 24 * u, 600, col, 'right', 0, .75);
+  ctx.restore();
+  // köşe kesim işaretleri
+  ctx.strokeStyle = col; ctx.globalAlpha = a * .45; ctx.lineWidth = 2 * u;
+  const cm = M * .45, cl = 26 * u;
+  for (const [x, y, sx, sy] of [[cm, cm, 1, 1], [W - cm, cm, -1, 1], [cm, H - cm, 1, -1], [W - cm, H - cm, -1, -1]]) {
+    ctx.beginPath(); ctx.moveTo(x, y + sy * cl); ctx.lineTo(x, y); ctx.lineTo(x + sx * cl, y); ctx.stroke();
+  }
+  // alt: ilerleme + zaman kodu
+  const by = V ? H - 130 * u : H - M;
+  ctx.globalAlpha = a * .25; ctx.fillStyle = col; ctx.fillRect(M, by, W - 2 * M, 2 * u);
+  ctx.globalAlpha = a; ctx.fillRect(M, by, (W - 2 * M) * clamp(t / DUR), 2 * u);
+  text('online grafik tasarım eğitimi', M, by - 18 * u, 22 * u, 500, col, 'left', 0, .7);
+  const fr = Math.floor((t % 1) * 60), sec = Math.floor(t);
+  const tc = `00:${String(sec).padStart(2, '0')}:${String(fr).padStart(2, '0')}`;
+  const cw = 14 * u; let x = W - M - tc.length * cw;
+  for (const ch of tc) { text(ch, x + cw / 2, by - 18 * u, 22 * u, 500, col, 'center', 0, .7); x += cw; }
+  ctx.restore();
+}
+
+// ================= kompozisyon =================
+function drawScene(t) {
+  ctx.save();
+  ctx.globalAlpha = 1; ctx.letterSpacing = '0px';
+  if (t < 2.5) scene1(t);
+  else if (t < 5.0) scene2(t);
+  else if (t < 7.5) scene3(t);
+  else if (t < 10.0) scene4(t);
+  else if (t < 12.5) scene5(t);
+  else scene6(t);
+  hud(t);
+  ctx.restore();
+}
+
+// hareket bulanıklığı: 180° obtüratör, alt-örneklerin ortalaması
+const FPS = 60, SAMPLES = RENDER ? 6 : 1;
+function renderAt(t) {
+  t = clamp(t, 0, DUR - 1e-4);
+  if (SAMPLES === 1) { drawScene(t); octx.globalAlpha = 1; octx.drawImage(buf, 0, 0); return; }
+  const sh = 0.5 / FPS;
+  for (let s = 0; s < SAMPLES; s++) {
+    const ts = clamp(t + (s / (SAMPLES - 1) - .5) * sh, 0, DUR - 1e-4);
+    drawScene(ts);
+    octx.globalAlpha = 1 / (s + 1);
+    octx.drawImage(buf, 0, 0);
+  }
+  octx.globalAlpha = 1;
+}
+window.renderAt = renderAt;
+
+// fontlar
+const faces = [
+  new FontFace('Inter', 'url(fonts/inter-latin-wght-normal.woff2) format("woff2")', { weight: '100 900', unicodeRange: 'U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD' }),
+  new FontFace('Inter', 'url(fonts/inter-latin-ext-wght-normal.woff2) format("woff2")', { weight: '100 900', unicodeRange: 'U+0100-0130,U+0132-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+1E00-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF' }),
+];
+window.ready = Promise.all(faces.map(f => f.load())).then(fs => {
+  fs.forEach(f => document.fonts.add(f));
+  return document.fonts.load('800 100px Inter', 'ğşı→');
+}).then(() => {
+  _logo = null;
+  if (!RENDER) {
+    const t0 = performance.now();
+    const loop = now => { renderAt(((now - t0) / 1000) % DUR); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  }
+  return true;
+});
+</script>
+</body>
+</html>
