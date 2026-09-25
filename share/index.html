@@ -1,0 +1,36 @@
+<title>infoakademi videoları</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap">
+<style>
+  :root { color-scheme: dark; --bg:#0D0D10; --fg:#F2EFE8; --mute:#9a978f; --line:#26262c; --lime:#C6F432; }
+  body { background:var(--bg); color:var(--fg); font-family:Inter, system-ui, sans-serif; padding-inline:16px; padding-block:32px 48px; }
+  main { max-width:1100px; margin:0 auto; display:grid; gap:28px; }
+  h1 { font-size:clamp(32px,6vw,56px); font-weight:800; letter-spacing:-0.04em; margin:0; }
+  h1 span { color:var(--lime); }
+  p { color:var(--mute); margin:0; line-height:1.5; max-width:62ch; }
+  .grid { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,2fr); gap:20px; align-items:start; }
+  @media (max-width:760px){ .grid { grid-template-columns:1fr; } }
+  figure { margin:0; display:grid; gap:10px; }
+  video { width:100%; max-width:100%; border-radius:6px; background:#000; border:1px solid var(--line); display:block; }
+  figcaption { font-size:14px; display:flex; justify-content:space-between; gap:12px; }
+  figcaption b { font-weight:600; }
+  figcaption span { color:var(--mute); font-variant-numeric:tabular-nums; }
+  audio { width:100%; }
+</style>
+<main>
+  <h1><span>●</span> infoakademi</h1>
+  <p>İndirmek için: videoya sağ tıklayıp “Videoyu farklı kaydet” seçin. Telefonda videoyu tam ekran açıp paylaş / kaydet menüsünü kullanın.</p>
+  <div class="grid">
+    <figure>
+      <video src="infoakademi-reels-1080x1920.mp4" controls playsinline preload="metadata"></video>
+      <figcaption><b>Dikey · Reels</b><span>1080×1920 · 15 sn</span></figcaption>
+    </figure>
+    <figure>
+      <video src="infoakademi-x-1920x1080.mp4" controls playsinline preload="metadata"></video>
+      <figcaption><b>Yatay · X</b><span>1920×1080 · 15 sn</span></figcaption>
+    </figure>
+  </div>
+  <figure>
+    <audio src="infoakademi-music.wav" controls preload="none"></audio>
+    <figcaption><b>Müzik (ayrı)</b><span>WAV · 48 kHz</span></figcaption>
+  </figure>
+</main>
