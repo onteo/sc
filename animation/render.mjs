@@ -1,5 +1,6 @@
 // Kullanım:
 //   node render.mjs                  -> iki videoyu da render eder (../videos)
+//   node render.mjs mux              -> sadece müziği mevcut videolara ekler
 //   node render.mjs stills 1080x1920 -> kontrol için ara kareleri PNG olarak kaydeder
 import { chromium } from 'playwright';
 import { createServer } from 'node:http';
@@ -11,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const OUT = path.resolve(DIR, '../videos');
 const FPS = 60, DUR = 15;
+const AUDIO = path.resolve(DIR, '../audio/infoakademi-music.wav');
 const FFMPEG = process.env.FFMPEG ||
   execSync(`python3 -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())"`).toString().trim();
 
@@ -59,6 +61,15 @@ async function video(w, h, name) {
   await page.close();
 }
 
+// müziği (../audio/infoakademi-music.wav, `python3 music.py` ile üretilir) videoya ekler
+function mux(name) {
+  const file = path.join(OUT, name), tmp = file.replace('.mp4', '.tmp.mp4');
+  execSync(`"${FFMPEG}" -y -loglevel error -i "${file}" -i "${AUDIO}" -map 0:v -map 1:a -c:v copy ` +
+    `-af loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000 -c:a aac -b:a 256k -shortest -movflags +faststart "${tmp}"`);
+  execSync(`mv "${tmp}" "${file}"`);
+  console.log(`${name} + müzik ✓`);
+}
+
 await mkdir(OUT, { recursive: true });
 if (process.argv[2] === 'stills') {
   const [w, h] = (process.argv[3] || '1080x1920').split('x').map(Number);
@@ -69,8 +80,12 @@ if (process.argv[2] === 'stills') {
   const { writeFile } = await import('node:fs/promises');
   for (const t of times) await writeFile(path.join(dir, `${w}x${h}_${t.toFixed(2)}.png`), await frame(page, t));
 } else {
-  await video(1080, 1920, 'infoakademi-reels-1080x1920.mp4');
-  await video(1920, 1080, 'infoakademi-x-1920x1080.mp4');
+  const names = ['infoakademi-reels-1080x1920.mp4', 'infoakademi-x-1920x1080.mp4'];
+  if (process.argv[2] !== 'mux') {
+    await video(1080, 1920, names[0]);
+    await video(1920, 1080, names[1]);
+  }
+  for (const n of names) mux(n);
 }
 await browser.close();
 server.close();
