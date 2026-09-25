@@ -15,10 +15,29 @@
   figcaption b { font-weight:600; }
   figcaption span { color:var(--mute); font-variant-numeric:tabular-nums; }
   audio { width:100%; }
+  .grid3 { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,2fr); gap:20px; align-items:start; }
+  @media (max-width:760px){ .grid3 { grid-template-columns:1fr 1fr; } .grid3 .wide { grid-column:1 / -1; } }
 </style>
 <main>
   <h1><span>●</span> infoakademi</h1>
   <p>İndirmek için: videoya sağ tıklayıp “Videoyu farklı kaydet” seçin. Telefonda videoyu tam ekran açıp paylaş / kaydet menüsünü kullanın.</p>
+  <h1 style="font-size:clamp(26px,4.5vw,40px)">Uygulama tanıtımı</h1>
+  <p>21 sn · gerçek ekranlar, dokunma animasyonları, müzik. App Store sürümü 886×1920 / 30 fps.</p>
+  <div class="grid3">
+    <figure>
+      <video src="app-reels.mp4" controls playsinline preload="metadata"></video>
+      <figcaption><b>Dikey · Reels</b><span>1080×1920</span></figcaption>
+    </figure>
+    <figure>
+      <video src="app-store.mp4" controls playsinline preload="metadata"></video>
+      <figcaption><b>App Store önizleme</b><span>886×1920</span></figcaption>
+    </figure>
+    <figure class="wide">
+      <video src="app-yatay.mp4" controls playsinline preload="metadata"></video>
+      <figcaption><b>Yatay</b><span>1920×1080</span></figcaption>
+    </figure>
+  </div>
+  <h1 style="font-size:clamp(26px,4.5vw,40px)">Grafik tasarım eğitimi · 15 sn</h1>
   <div class="grid">
     <figure>
       <video src="infoakademi-reels-1080x1920.mp4" controls playsinline preload="metadata"></video>
