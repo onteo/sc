@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>Seyro promo</title>
+<style>
+  html, body { margin: 0; background: #000; height: 100%; }
+  body { display: grid; place-items: center; }
+  canvas { max-width: 100vw; max-height: 100vh; display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * Seyro — uygulama tanıtım videosu (23 sn, dikey 1080×1920, Türkçe)
+ * Sözler özgün (telifli şarkı kullanılmaz). Karaoke ekranı uygulamanın tasarımıyla yeniden çizilir.
+ */
+const Q = new URLSearchParams(location.search);
+const W = +Q.get('w') || 1080, H = +Q.get('h') || 1920;
+const RENDER = Q.has('render');
+const FPS = +Q.get('fps') || 60;
+const DUR = 23;
+const u = Math.min(W, H) / 1080;
+const cx = W / 2, cy = H / 2;
+const FONT = '"Plus Jakarta Sans"';
+
+const C = { bg: '#0B0B0E', lime: '#D8F53C', white: '#F4F4F6', gray: '#8A8A93', dim: '#3A3A41' };
+
+const out = document.getElementById('c'); out.width = W; out.height = H;
+const octx = out.getContext('2d');
+const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
+const ctx = buf.getContext('2d');
+const SW = 923, SH = 2000;
+const scr = document.createElement('canvas'); scr.width = SW; scr.height = SH;
+const sctx = scr.getContext('2d');
+const tmp = document.createElement('canvas'); tmp.width = 8; tmp.height = 8;
+const tctx = tmp.getContext('2d', { willReadFrequently: true });
+
+// ---------- yardımcılar ----------
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, p) => a + (b - a) * p;
+const E = {
+  outExpo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  outCubic: x => 1 - Math.pow(1 - x, 3),
+  inCubic: x => x * x * x,
+  outQuint: x => 1 - Math.pow(1 - x, 5),
+  inOutCubic: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  inOutQuint: x => x < .5 ? 16 * x ** 5 : 1 - Math.pow(-2 * x + 2, 5) / 2,
+  outBack: (x, s = 1.70158) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2),
+  inBack: (x, s = 1.70158) => (s + 1) * x * x * x - s * x * x,
+};
+const win = (t, a, b, c, d) => E.inOutCubic(prog(t, a, b)) * (1 - E.inOutCubic(prog(t, c, d)));
+function font(g, size, weight = 700) { g.font = `${Math.round(weight)} ${size}px ${FONT}`; }
+function measure(g, str, size, weight = 700, track = 0) {
+  font(g, size, weight); g.letterSpacing = `${track * size}px`;
+  const w = g.measureText(str).width; g.letterSpacing = '0px'; return w;
+}
+function text(g, str, x, y, size, weight, color, align = 'left', track = -0.02, alpha = 1) {
+  g.save(); font(g, size, weight); g.letterSpacing = `${track * size}px`;
+  g.textAlign = align; g.textBaseline = 'alphabetic'; g.fillStyle = color; g.globalAlpha *= alpha;
+  g.fillText(str, x, y); g.restore();
+}
+function reveal(g, str, x, y, size, weight, color, p, o = {}) {
+  if (p <= 0) return;
+  const align = o.align || 'left', track = o.track ?? -0.035;
+  g.save();
+  const w = measure(g, str, size, weight, track);
+  const x0 = align === 'center' ? x - w / 2 : align === 'right' ? x - w : x;
+  g.beginPath(); g.rect(x0 - size * .3, y - size * 1.08, w + size * .6, size * 1.42); g.clip();
+  font(g, size, weight); g.letterSpacing = `${track * size}px`; g.textAlign = align;
+  g.fillStyle = color; g.globalAlpha *= (o.alpha ?? 1);
+  g.fillText(str, x, y + (1 - p) * size * 1.35);
+  g.restore();
+}
+function rrect(g, x, y, w, h, r) {
+  r = Math.max(0, Math.min(r, w / 2, h / 2));
+  g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+function circle(g, x, y, r, fill) { if (r <= 0) return; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fillStyle = fill; g.fill(); }
+function hexA(h, a) { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; }
+// uygulamanın dalga ikonu (5 çubuk)
+function bars(g, x, y, s, color, t = 0, live = 0) {
+  const hs = [.42, .7, 1, .7, .42];
+  g.save(); g.fillStyle = color;
+  for (let i = 0; i < 5; i++) {
+    let h = hs[i];
+    if (live) h *= lerp(1, .45 + .55 * Math.abs(Math.sin(t * 7.3 + i * 1.7) * Math.cos(t * 3.1 + i)), live);
+    const bw = s * .09, bh = s * h;
+    rrect(g, x + (i - 2) * s * .19 - bw / 2, y - bh / 2, bw, bh, bw / 2); g.fill();
+  }
+  g.restore();
+}
+function logoMark(g, x, y, r, alpha = 1) {
+  if (r <= 0) return;
+  g.save(); g.globalAlpha *= alpha;
+  const gl = g.createRadialGradient(x, y, r * .6, x, y, r * 2.2);
+  gl.addColorStop(0, hexA(C.lime, .35)); gl.addColorStop(1, hexA(C.lime, 0));
+  g.fillStyle = gl; g.fillRect(x - r * 2.3, y - r * 2.3, r * 4.6, r * 4.6);
+  circle(g, x, y, r, C.lime);
+  bars(g, x, y, r * 1.05, '#101012');
+  g.restore();
+}
+
+// ---------- görseller ----------
+const IMG = {};
+const names = ['discover', 'start', 'listening', 'import', 'karaoke'];
+const loadImg = n => new Promise((res, rej) => { const i = new Image(); i.onload = () => { IMG[n] = i; res(); }; i.onerror = rej; i.src = `app/${n}.webp`; });
+let COL = {};
+function sample(img, x, y) {
+  tctx.clearRect(0, 0, 2, 2); tctx.drawImage(img, x, y, 1, 1, 0, 0, 1, 1);
+  const d = tctx.getImageData(0, 0, 1, 1).data; return `rgb(${d[0]},${d[1]},${d[2]})`;
+}
+
+// ---------- telefon ----------
+let PH = { x: 0, y: 0, k: 1, rot: 0 };
+function drawPhone() {
+  const { x, y, k, rot } = PH;
+  const sw = SW * k, sh = SH * k, bez = 13 * u, r = sw * 0.135;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+  ctx.save();
+  ctx.shadowColor = hexA(C.lime, .16); ctx.shadowBlur = 120 * u;
+  rrect(ctx, -sw / 2 - bez, -sh / 2 - bez, sw + 2 * bez, sh + 2 * bez, r + bez); ctx.fillStyle = '#1B1C20'; ctx.fill();
+  ctx.restore();
+  const gr = ctx.createLinearGradient(-sw / 2 - bez, 0, sw / 2 + bez, 0);
+  gr.addColorStop(0, '#6A6D76'); gr.addColorStop(.08, '#2C2D33'); gr.addColorStop(.92, '#2C2D33'); gr.addColorStop(1, '#6A6D76');
+  rrect(ctx, -sw / 2 - bez, -sh / 2 - bez, sw + 2 * bez, sh + 2 * bez, r + bez); ctx.lineWidth = 3 * u; ctx.strokeStyle = gr; ctx.stroke();
+  ctx.fillStyle = '#2C2D33';
+  ctx.fillRect(sw / 2 + bez - 1, -sh * .2, 5 * u, sh * .12);
+  ctx.fillRect(-sw / 2 - bez - 4 * u, -sh * .28, 5 * u, sh * .06);
+  ctx.fillRect(-sw / 2 - bez - 4 * u, -sh * .19, 5 * u, sh * .06);
+  ctx.save(); rrect(ctx, -sw / 2, -sh / 2, sw, sh, r); ctx.clip();
+  ctx.imageSmoothingQuality = 'high'; ctx.drawImage(scr, -sw / 2, -sh / 2, sw, sh); ctx.restore();
+  const iw = sw * 0.3, ih = sw * 0.088;
+  rrect(ctx, -iw / 2, -sh / 2 + sw * 0.03, iw, ih, ih / 2); ctx.fillStyle = '#000'; ctx.fill();
+  ctx.restore();
+}
+
+// ---------- dokunuşlar ----------
+const TAPS = [[4.4, 461, 453], [5.6, 461, 1332], [15.0, 637, 1860], [15.35, 461, 497], [16.05, 461, 833], [18.2, 107, 1860]];
+function taps(g, t) {
+  for (const [T, x, y] of TAPS) {
+    if (t < T - .3 || t > T + .6) continue;
+    const a = prog(t, T - .3, T - .12) * (1 - prog(t, T + .18, T + .42));
+    const s = E.outBack(prog(t, T - .3, T - .1)) * (1 - .18 * Math.sin(prog(t, T - .04, T + .16) * Math.PI));
+    g.save(); g.globalAlpha = a;
+    circle(g, x, y, 50 * s, 'rgba(255,255,255,.4)');
+    g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,.7)'; g.beginPath(); g.arc(x, y, 50 * s, 0, Math.PI * 2); g.stroke();
+    g.restore();
+    const rp = prog(t, T, T + .5);
+    if (rp > 0 && rp < 1) {
+      g.save(); g.globalAlpha = (1 - rp) * .8; g.lineWidth = 6 * (1 - rp) + 1; g.strokeStyle = C.lime;
+      g.beginPath(); g.arc(x, y, 50 + E.outCubic(rp) * 90, 0, Math.PI * 2); g.stroke(); g.restore();
+    }
+  }
+}
+
+// ---------- ekranlar ----------
+// kayıttan gelen büyük dynamic island / kayıt noktasını temiz durum çubuğuyla değiştir
+function statusBar() { sctx.drawImage(IMG.discover, 0, 0, SW, 128, 0, 0, SW, 128); }
+function shot(n, alpha = 1, s = 1, x = 0) {
+  sctx.save(); sctx.globalAlpha = alpha;
+  if (s !== 1) { sctx.translate(SW / 2, SH / 2); sctx.scale(s, s); sctx.translate(-SW / 2, -SH / 2); }
+  sctx.drawImage(IMG[n], x, 0);
+  if (n !== 'discover' && n !== 'start') statusBar();
+  sctx.restore();
+}
+
+const SONG = 'Sing It Free', ARTIST = 'Seyro Demo';
+// özgün sözler: [orijinal, Türkçe okunuş]
+const LYR = [
+  ['Sing it loud, sing it free', 'Sing it laud, sing it fri'],
+  ['Every word belongs to me', 'Evri vörd bilongz tu mi'],
+  ['Turn it up and let it go', 'Törn it ap end let it go'],
+  ['Now I’m singing on my own', 'Nav aym singing on may ovn'],
+  ['Feel the music, feel the beat', 'Fiil dı myuzik, fiil dı biit'],
+  ['Dancing down the city street', 'Densing davn dı siti striit'],
+];
+const L0 = 9.5, LD = 1.0;   // ilk satır zamanı, satır süresi
+
+function cover(g, x, y, s, r) {
+  const gr = g.createLinearGradient(x, y, x + s, y + s);
+  gr.addColorStop(0, '#C9573A'); gr.addColorStop(1, '#5A2320');
+  rrect(g, x, y, s, s, r); g.fillStyle = gr; g.fill();
+  bars(g, x + s / 2, y + s / 2, s * .45, 'rgba(255,255,255,.9)');
+}
+
+function karaoke(t) {
+  sctx.drawImage(IMG.karaoke, 0, 0); statusBar();
+  // başlık alanı
+  sctx.fillStyle = COL.bg; sctx.fillRect(30, 170, 570, 150);
+  cover(sctx, 57, 195, 102, 16);
+  text(sctx, SONG, 188, 240, 31, 700, '#fff', 'left', -0.01);
+  text(sctx, ARTIST, 188, 280, 26, 500, '#8C8C95', 'left', 0);
+  // söz alanı
+  sctx.fillStyle = COL.bg; sctx.fillRect(0, 322, SW, 1016);
+  sctx.save(); sctx.beginPath(); sctx.rect(0, 322, SW, 1016); sctx.clip();
+  const cur = (t - L0) / LD;
+  const idx = Math.floor(cur);
+  const s = idx - 1 + E.outCubic(clamp((cur - idx) / .28));
+  const LH = 128, activeY = 490;
+  for (let i = 0; i < LYR.length; i++) {
+    const d = i - s;
+    const y = d >= 0 ? activeY + d * LH : activeY + d * 112;
+    if (y < 300 || y > 1420) continue;
+    const line = LYR[i][1];
+    let sz = d >= 0 ? 64 : lerp(64, 44, clamp(-d));
+    const w = measure(sctx, line, sz, 800, -0.03);
+    if (w > 780) sz *= 780 / w;
+    const a = cur >= 0 ? clamp(1 - Math.abs(d) * 1.6) : 0;
+    text(sctx, line, 91, y, sz, 800, mix(d < 0 ? '#44444B' : '#35353B', '#FFFFFF', a), 'left', -0.03);
+    if (i === idx && cur >= 0) {
+      const wp = clamp((cur - idx - .08) / .86);
+      const lw = measure(sctx, line, sz, 800, -0.03);
+      sctx.save(); sctx.beginPath(); sctx.rect(80, y - sz, 11 + lw * wordFill(line, wp, sz), sz * 1.4); sctx.clip();
+      text(sctx, line, 91, y, sz, 800, C.lime, 'left', -0.03);
+      sctx.restore();
+    }
+  }
+  // alt kenar solması
+  const g = sctx.createLinearGradient(0, 1180, 0, 1338);
+  g.addColorStop(0, hexA('#101014', 0)); g.addColorStop(1, COL.bg);
+  sctx.fillStyle = g; sctx.fillRect(0, 1180, SW, 160);
+  sctx.restore();
+  // senk zaman damgası
+  sctx.fillStyle = COL.bg; sctx.fillRect(270, 1360, 90, 50);
+  const secs = 42 + Math.floor(Math.max(0, t - L0));
+  text(sctx, `0:${String(secs).padStart(2, '0')}`, 281, 1393, 26, 500, '#8C8C95', 'left', 0);
+}
+// kelime sınırlarına oturan dolgu oranı
+function wordFill(line, p, sz) {
+  const words = line.split(' ');
+  const k = p * words.length, n = Math.floor(k), f = k - n;
+  const full = words.slice(0, n).join(' ');
+  const part = n < words.length ? words[n] : '';
+  const tw = measure(sctx, line, sz, 800, -0.03);
+  const a = measure(sctx, full + (n ? ' ' : ''), sz, 800, -0.03);
+  const b = measure(sctx, part, sz, 800, -0.03);
+  return clamp((a + b * E.outCubic(f)) / tw);
+}
+function mix(a, b, p) {
+  const A = parseInt(a.slice(1), 16), B = parseInt(b.slice(1), 16);
+  const c = [16, 8, 0].map(s => Math.round(lerp(A >> s & 255, B >> s & 255, p)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+
+function listening(t) {
+  shot('listening');
+  // canlı dalga ikonu
+  sctx.fillStyle = COL.bg; sctx.fillRect(400, 270, 124, 120);
+  bars(sctx, 461, 328, 96, C.lime, t, 1);
+  // şarkı bulundu kartı
+  const p = E.outBack(prog(t, 8.0, 8.4), 1.3);
+  if (p > 0) {
+    const y = lerp(1300, 900, p);
+    sctx.save(); sctx.globalAlpha = clamp(p * 2);
+    sctx.fillStyle = COL.bg; sctx.fillRect(40, 1030, SW - 80, 150);
+    rrect(sctx, 60, y - 110, SW - 120, 240, 40); sctx.fillStyle = '#1A1A1F'; sctx.fill();
+    sctx.lineWidth = 2; sctx.strokeStyle = hexA(C.lime, .5); sctx.stroke();
+    cover(sctx, 96, y - 74, 168, 26);
+    text(sctx, 'SONG FOUND', 296, y - 30, 24, 700, C.lime, 'left', 0.12);
+    text(sctx, SONG, 296, y + 20, 42, 800, '#fff', 'left', -0.02);
+    text(sctx, 'Starting at 0:42', 296, y + 66, 27, 500, '#8C8C95', 'left', 0);
+    sctx.restore();
+  }
+}
+
+function importScreen(t) {
+  shot('import');
+  // şarkı adı yazılıyor
+  const n = Math.floor(SONG.length * prog(t, 15.45, 15.85));
+  if (t > 15.35) {
+    rrect(sctx, 60, 450, 780, 95, 20); sctx.fillStyle = COL.field; sctx.fill();
+    const s = SONG.slice(0, n);
+    text(sctx, s, 83, 510, 34, 500, '#fff', 'left', -0.01);
+    if (t < 16.0 && (Math.floor(t * 2.4) % 2 === 0 || n < SONG.length)) {
+      sctx.fillStyle = C.lime; sctx.fillRect(86 + measure(sctx, s, 34, 500, -0.01), 474, 3.5, 46);
+    }
+  }
+  // kuyruk: yeni öğe
+  const ip = E.outCubic(prog(t, 16.2, 16.55));
+  if (ip > 0) {
+    sctx.fillStyle = COL.bg; sctx.fillRect(40, 1030, SW - 80, 170 * 2);
+    // eski öğe aşağı kayar
+    sctx.drawImage(IMG.import, 40, 1036, SW - 80, 150, 40, 1036 + 160 * ip, SW - 80, 150);
+    sctx.save(); sctx.globalAlpha = ip; sctx.translate(0, (1 - ip) * -30);
+    rrect(sctx, 48, 1043, 827, 133, 32); sctx.fillStyle = COL.card; sctx.fill();
+    sctx.lineWidth = 2; sctx.strokeStyle = hexA(C.lime, .35 * (1 - prog(t, 17.6, 18))); sctx.stroke();
+    text(sctx, SONG, 81, 1106, 31, 600, '#fff', 'left', -0.01);
+    const pp = E.inOutCubic(prog(t, 16.4, 17.55));
+    if (t < 17.6) {
+      text(sctx, `Generating phonetic lyrics… ${Math.round(pp * 100)}%`, 81, 1144, 24, 500, '#8C8C95', 'left', 0);
+      rrect(sctx, 81, 1158, 600, 6, 3); sctx.fillStyle = '#2E2E35'; sctx.fill();
+      rrect(sctx, 81, 1158, 600 * pp, 6, 3); sctx.fillStyle = C.lime; sctx.fill();
+    } else {
+      text(sctx, 'Ready', 81, 1144, 26, 500, '#8C8C95', 'left', 0);
+      const k = E.outBack(prog(t, 17.6, 17.85), 3);
+      circle(sctx, 823, 1110, 18 * k, C.lime);
+      sctx.save(); sctx.translate(823, 1110); sctx.scale(k, k); sctx.fillStyle = '#111';
+      sctx.beginPath(); sctx.moveTo(-5, -8); sctx.lineTo(8, 0); sctx.lineTo(-5, 8); sctx.closePath(); sctx.fill(); sctx.restore();
+    }
+    sctx.restore();
+  }
+}
+
+function discoverStats(t) {
+  shot('discover');
+  const p = E.outCubic(prog(t, 18.55, 19.6));
+  if (t < 18.5) return;
+  const vals = [[125, 7], [413, 128], [700, 18]];
+  for (const [x, v] of vals) {
+    sctx.fillStyle = COL.card2; sctx.fillRect(x - 4, 628, 90, 64);
+    text(sctx, String(Math.round(v * p)), x, 676, 46, 700, '#fff', 'left', -0.02);
+  }
+}
+
+function drawScreen(t) {
+  sctx.save(); sctx.fillStyle = COL.bg; sctx.fillRect(0, 0, SW, SH);
+  if (t < 4.55) shot('discover');
+  else if (t < 5.75) {
+    const p = E.outQuint(prog(t, 4.55, 4.95));
+    shot('discover', 1, 1, -0.3 * SW * p);
+    sctx.fillStyle = `rgba(0,0,0,${.4 * p})`; sctx.fillRect(0, 0, SW, SH);
+    shot('start', 1, 1, SW * (1 - p));
+  } else if (t < 8.85) {
+    shot('start');
+    const p = E.outCubic(prog(t, 5.75, 6.05));
+    sctx.globalAlpha = p; listening(t); sctx.globalAlpha = 1;
+  } else if (t < 15.12) {
+    listening(t);
+    const p = E.outQuint(prog(t, 8.85, 9.3));
+    sctx.save(); sctx.globalAlpha = p;
+    sctx.translate(SW / 2, SH / 2); sctx.scale(lerp(1.06, 1, p), lerp(1.06, 1, p)); sctx.translate(-SW / 2, -SH / 2);
+    karaoke(t); sctx.restore();
+  } else if (t < 18.33) {
+    karaoke(t);
+    sctx.globalAlpha = E.outCubic(prog(t, 15.12, 15.3)); importScreen(t); sctx.globalAlpha = 1;
+  } else {
+    importScreen(t);
+    sctx.globalAlpha = E.outCubic(prog(t, 18.33, 18.5)); discoverStats(t); sctx.globalAlpha = 1;
+  }
+  taps(sctx, t);
+  sctx.restore();
+}
+
+// ---------- dizüstü bilgisayar (müzik çalan cihaz) ----------
+function laptop(x, y, w, t, alpha) {
+  if (alpha <= 0) return;
+  const h = w * .64;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y);
+  // ekran
+  rrect(ctx, -w / 2, -h, w, h, w * .03); ctx.fillStyle = '#1C1D22'; ctx.fill();
+  ctx.lineWidth = 2 * u; ctx.strokeStyle = '#4A4C55'; ctx.stroke();
+  const m = w * .035, iw = w - 2 * m, ih = h - 2 * m, ix = -w / 2 + m, iy = -h + m;
+  const g = ctx.createLinearGradient(ix, iy, ix + iw, iy + ih);
+  g.addColorStop(0, '#2B2340'); g.addColorStop(1, '#121217');
+  ctx.fillStyle = g; ctx.fillRect(ix, iy, iw, ih);
+  const cs = ih * .56;
+  cover(ctx, ix + iw * .08, iy + ih * .14, cs, cs * .1);
+  const tx = ix + iw * .08 + cs + iw * .06;
+  text(ctx, SONG, tx, iy + ih * .34, ih * .1, 800, '#fff', 'left', -0.02);
+  text(ctx, ARTIST, tx, iy + ih * .47, ih * .065, 500, '#9A9AA5', 'left', 0);
+  // oynatma çubuğu
+  const bw = iw * .5;
+  ctx.fillStyle = '#3A3A44'; ctx.fillRect(tx, iy + ih * .6, bw, 4 * u);
+  const pr = clamp(.35 + (t - 6) * .02, 0, 1);
+  ctx.fillStyle = '#fff'; ctx.fillRect(tx, iy + ih * .6, bw * pr, 4 * u);
+  circle(ctx, tx + bw * pr, iy + ih * .6 + 2 * u, 7 * u, '#fff');
+  // ekolayzer
+  for (let i = 0; i < 18; i++) {
+    const bh = ih * .12 * (.3 + .7 * Math.abs(Math.sin(t * 6 + i * .9) * Math.cos(t * 2.3 + i * .4)));
+    ctx.fillStyle = hexA(C.lime, .8); ctx.fillRect(ix + iw * .08 + i * (iw * .84 / 18), iy + ih * .92 - bh, iw * .84 / 18 * .55, bh);
+  }
+  // gövde
+  ctx.beginPath(); ctx.moveTo(-w * .58, 0); ctx.lineTo(w * .58, 0); ctx.lineTo(w * .54, h * .07); ctx.lineTo(-w * .54, h * .07); ctx.closePath();
+  const bg = ctx.createLinearGradient(0, 0, 0, h * .07); bg.addColorStop(0, '#8C8F98'); bg.addColorStop(1, '#4A4C54');
+  ctx.fillStyle = bg; ctx.fill();
+  ctx.restore();
+}
+// ses dalgaları: bilgisayardan telefona
+function soundWaves(x0, y0, x1, y1, t, a) {
+  if (a <= 0) return;
+  const ang = Math.atan2(y1 - y0, x1 - x0), dist = Math.hypot(x1 - x0, y1 - y0);
+  for (let i = 0; i < 4; i++) {
+    const ph = ((t * .9 + i / 4) % 1);
+    ctx.save(); ctx.globalAlpha = a * Math.sin(ph * Math.PI) * .8;
+    ctx.strokeStyle = C.lime; ctx.lineWidth = 5 * u; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.arc(x0, y0, 60 * u + ph * dist * .75, ang - .32, ang + .32); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+// ---------- arka plan ----------
+function background(t) {
+  ctx.fillStyle = C.bg; ctx.fillRect(0, 0, W, H);
+  const blobs = [[.2, .25, C.lime, .1], [.85, .7, '#6E5BFF', .12], [.5, 1.0, C.lime, .08]];
+  blobs.forEach(([bx, by, col, a], i) => {
+    const x = (bx + Math.sin(t * .3 + i * 2) * .06) * W, y = (by + Math.cos(t * .23 + i) * .05) * H;
+    const r = Math.max(W, H) * .5;
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0, hexA(col, a)); g.addColorStop(1, hexA(col, 0));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  });
+  // alt kısımda soluk ses dalgası
+  ctx.save(); ctx.globalAlpha = .12;
+  const n = 48, bw = W / n;
+  for (let i = 0; i < n; i++) {
+    const h = (40 + 160 * Math.abs(Math.sin(t * 2.2 + i * .45) * Math.sin(t * .9 + i * .21))) * u;
+    ctx.fillStyle = C.lime; rrect(ctx, i * bw + bw * .25, H - h - 30 * u, bw * .5, h, bw * .25); ctx.fill();
+  }
+  ctx.restore();
+}
+
+// ---------- başlıklar ----------
+const CAPS = [
+  [3.6, 5.4, 'tek dokunuş', ['Müziği aç,', 'Seyro dinlesin.']],
+  [5.4, 8.9, 'şarkı tanıma', ['Hoparlör, TV, YouTube…', 'anında tanır.']],
+  [8.9, 12.2, 'senkron sözler', ['Sözler tam', 'kaldığı yerden.']],
+  [12.2, 15.1, 'türkçe okunuş', ['İngilizce bilmeden', 'eşlik et.']],
+  [15.1, 18.3, 'mp3 yükle', ['Kendi şarkını yükle,', 'okunuşu hazır.']],
+  [18.3, 20.2, 'ilerleme', ['Her gün biraz', 'daha akıcı.']],
+];
+function captions(t) {
+  const size = 80 * u, lh = size * 1.08, x = 76 * u, ey = H * 0.108;
+  for (const [a, b, eb, lines] of CAPS) {
+    if (t < a - .01 || t > b + .01) continue;
+    const o = E.inCubic(prog(t, b - .22, b));
+    ctx.save(); ctx.globalAlpha = 1 - o; ctx.translate(0, -o * 40 * u);
+    const ep = E.outExpo(prog(t, a, a + .6));
+    const es = 26 * u, ew = measure(ctx, eb, es, 700, 0.04) + es * 1.4;
+    ctx.save(); ctx.globalAlpha *= ep;
+    rrect(ctx, x, ey - es * 1.25 + (1 - ep) * 20 * u, ew * lerp(.7, 1, ep), es * 1.8, es * .9);
+    ctx.fillStyle = hexA(C.lime, .14); ctx.fill(); ctx.restore();
+    reveal(ctx, eb, x + es * .7, ey + (1 - ep) * 20 * u, es, 700, C.lime, ep, { track: 0.04 });
+    lines.forEach((s, i) => {
+      const p = E.outExpo(prog(t, a + .06 + i * .08, a + .8 + i * .08));
+      reveal(ctx, s, x - 4 * u, ey + 106 * u + i * lh, size, 800, i ? C.lime : C.white, p, { track: -0.04 });
+    });
+    ctx.restore();
+  }
+}
+
+// ---------- kanca: İngilizce satır → Türkçe okunuş ----------
+const HOOK = LYR[1];
+function hook(t) {
+  const out = E.inCubic(prog(t, 2.15, 2.45));
+  if (out >= 1) return;
+  ctx.save(); ctx.globalAlpha = 1 - out; ctx.translate(0, -out * 60 * u);
+  const qs = 70 * u;
+  const q = ['Sevdiğin şarkı', 'İngilizce mi?'];
+  q.forEach((s, i) => reveal(ctx, s, cx, H * .33 + i * qs * 1.1, qs, 800, i ? C.lime : C.white, E.outExpo(prog(t, .05 + i * .1, .75 + i * .1)), { align: 'center', track: -0.04 }));
+  // söz satırı: kelime kelime dönüşüm
+  const en = HOOK[0].split(' '), tr = HOOK[1].split(' ');
+  const ls = 76 * u, y = H * .56;
+  const lp = E.outExpo(prog(t, .55, 1.1));
+  const tag = E.outExpo(prog(t, 1.0, 1.4));
+  // her kelimenin genişliği: iki hâlin en genişi
+  const ws = en.map((w, i) => Math.max(measure(ctx, w, ls, 800, -0.03), measure(ctx, tr[i], ls, 800, -0.03)));
+  const sp = ls * .3, total = ws.reduce((a, b) => a + b, 0) + sp * (ws.length - 1);
+  const fit = Math.min(1, (W - 120 * u) / total);
+  const s2 = ls * fit;
+  let x = cx - total * fit / 2;
+  en.forEach((w, i) => {
+    const t0 = 1.15 + i * .17;
+    const f = E.outCubic(prog(t, t0, t0 + .22));
+    const wx = x + ws[i] * fit / 2;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x - 10 * u, y - s2 * 1.1, ws[i] * fit + 20 * u, s2 * 1.45); ctx.clip();
+    reveal(ctx, w, wx, y - f * s2 * 1.3, s2, 800, '#6D6D78', lp, { align: 'center', track: -0.03 });
+    if (f > 0) text(ctx, tr[i], wx, y + (1 - f) * s2 * 1.3, s2, 800, C.lime, 'center', -0.03);
+    ctx.restore();
+    x += (ws[i] + sp) * fit;
+  });
+  // etiketler
+  const lab = t < 1.15 ? 'orijinal söz' : 'türkçe okunuşu';
+  const lc = t < 1.15 ? '#6D6D78' : C.lime;
+  reveal(ctx, lab, cx, y + 100 * u, 30 * u, 700, lc, tag, { align: 'center', track: 0.06 });
+  ctx.restore();
+}
+
+function drawScene(t) {
+  ctx.save(); ctx.letterSpacing = '0px';
+  background(t);
+
+  // telefon
+  const bk = (H * 0.72) / SH;
+  let px = cx, py = H * 0.612, k = bk;
+  const rise = E.outQuint(prog(t, 3.0, 3.75));
+  const fall = E.inBack(prog(t, 20.2, 20.75), 1.3);
+  const side = win(t, 5.9, 6.5, 8.55, 9.1);        // dinleme: telefon sağa, bilgisayar sola
+  px += side * W * .16; py += side * H * .06; k *= 1 - side * .22;
+  py += (1 - rise) * H * .95 + fall * H * .95 + Math.sin(t * 1.3) * 5 * u;
+  const rot = (1 - rise) * .12 - fall * .1 + side * .04 + Math.sin(t * .9) * .006;
+  // sözlere yaklaş (üst kenar sabit)
+  const zw = win(t, 11.0, 11.4, 14.6, 15.0);
+  if (zw > 0) {
+    const zz = 1 + .16 * zw, top = py - SH * k / 2;
+    py = top + (py - top) * zz; k *= zz;
+  }
+  PH = { x: px, y: py, k, rot };
+
+  if (side > 0) {
+    const lx = W * .22 - (1 - side) * W * .6, ly = H * .74;
+    laptop(lx, ly, 470 * u, t, side);
+    soundWaves(lx + 120 * u, ly - 200 * u, px - 150 * u, py - 100 * u, t, side * prog(t, 6.3, 6.6) * (1 - prog(t, 8.2, 8.5)));
+  }
+  if (t > 2.95 && t < 20.8) { drawScreen(t); drawPhone(); }
+  if (t > 3.5 && t < 20.3) captions(t);
+
+  // kanca + logo
+  if (t < 2.5) hook(t);
+  if (t > 2.2 && t < 3.6) {
+    const lp = E.outBack(prog(t, 2.25, 2.7), 1.8), lo = E.inCubic(prog(t, 3.0, 3.45));
+    const y = H * .42 - lo * 300 * u;
+    ctx.save(); ctx.globalAlpha = 1 - lo;
+    logoMark(ctx, cx, y, 90 * u * lp);
+    reveal(ctx, 'Seyro', cx, y + 230 * u, 130 * u, 800, C.white, E.outExpo(prog(t, 2.4, 2.95)), { align: 'center', track: -0.05 });
+    ctx.restore();
+  }
+  // outro
+  if (t > 20.4) {
+    const ip = E.outBack(prog(t, 20.45, 21.0), 1.8);
+    const y = H * .34;
+    logoMark(ctx, cx, y, 100 * u * ip);
+    reveal(ctx, 'Seyro', cx, y + 250 * u, 140 * u, 800, C.white, E.outExpo(prog(t, 20.6, 21.2)), { align: 'center', track: -0.05 });
+    const tp = E.outExpo(prog(t, 20.9, 21.5));
+    reveal(ctx, 'Bilmediğin dilde,', cx, y + 360 * u, 46 * u, 700, C.white, tp, { align: 'center', track: -0.02 });
+    reveal(ctx, 'sevdiğin şarkıyı söyle.', cx, y + 420 * u, 46 * u, 700, C.lime, E.outExpo(prog(t, 21.0, 21.6)), { align: 'center', track: -0.02 });
+    badge(cx - 175 * u, y + 500 * u, 350 * u, 110 * u, E.outBack(prog(t, 21.3, 21.75), 2));
+  }
+  ctx.restore();
+}
+
+const APPLE = new Path2D('M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701');
+function badge(x, y, w, h, p) {
+  if (p <= 0) return;
+  ctx.save();
+  ctx.translate(x + w / 2, y + h / 2); ctx.scale(lerp(.8, 1, p), lerp(.8, 1, p)); ctx.translate(-(x + w / 2), -(y + h / 2));
+  ctx.globalAlpha = clamp(p * 1.4);
+  rrect(ctx, x, y, w, h, h * .2); ctx.fillStyle = '#000'; ctx.fill();
+  ctx.lineWidth = 2 * u; ctx.strokeStyle = '#A6A6A6'; ctx.stroke();
+  const is = h * .5;
+  ctx.save(); ctx.translate(x + h * .3, y + (h - is) / 2); ctx.scale(is / 24, is / 24); ctx.fillStyle = '#fff'; ctx.fill(APPLE); ctx.restore();
+  const tx = x + h * .3 + is + h * .18;
+  text(ctx, "App Store'dan", tx, y + h * .4, h * .19, 500, '#fff', 'left', 0);
+  text(ctx, 'İndirin', tx, y + h * .8, h * .36, 700, '#fff', 'left', -0.02);
+  ctx.restore();
+}
+
+const SAMPLES = RENDER ? 4 : 1;
+function renderAt(t) {
+  t = clamp(t, 0, DUR - 1e-4);
+  if (SAMPLES === 1) { drawScene(t); octx.globalAlpha = 1; octx.drawImage(buf, 0, 0); return; }
+  const sh = 0.5 / FPS;
+  for (let s = 0; s < SAMPLES; s++) {
+    drawScene(clamp(t + (s / (SAMPLES - 1) - .5) * sh, 0, DUR - 1e-4));
+    octx.globalAlpha = 1 / (s + 1); octx.drawImage(buf, 0, 0);
+  }
+  octx.globalAlpha = 1;
+}
+window.renderAt = renderAt;
+
+const faces = [
+  new FontFace('Plus Jakarta Sans', 'url(fonts/plus-jakarta-sans-latin-wght-normal.woff2) format("woff2")', { weight: '200 800', unicodeRange: 'U+0000-00FF,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD' }),
+  new FontFace('Plus Jakarta Sans', 'url(fonts/plus-jakarta-sans-latin-ext-wght-normal.woff2) format("woff2")', { weight: '200 800', unicodeRange: 'U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+1E00-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF' }),
+];
+window.ready = Promise.all([...faces.map(f => f.load()), ...names.map(loadImg)]).then(res => {
+  res.slice(0, 2).forEach(f => document.fonts.add(f));
+  COL = {
+    bg: sample(IMG.karaoke, 30, 1000), field: sample(IMG.import, 700, 497), card: sample(IMG.import, 600, 1150),
+    card2: sample(IMG.discover, 250, 690),
+  };
+  return document.fonts.load('800 100px "Plus Jakarta Sans"', 'ğşıİöü');
+}).then(() => {
+  if (!RENDER) {
+    const t0 = performance.now();
+    const loop = now => { renderAt(((now - t0) / 1000) % DUR); requestAnimationFrame(loop); };
+    requestAnimationFrame(loop);
+  }
+  return true;
+});
+</script>
+</body>
+</html>

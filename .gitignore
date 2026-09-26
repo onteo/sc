@@ -2,3 +2,6 @@ node_modules/
 animation/stills/
 promo/stills/
 *.tmp.mp4
+seyro/node_modules
+promo/node_modules
+animation/node_modules
