@@ -24,6 +24,20 @@ const DUR = 23;
 const u = Math.min(W, H) / 1080;
 const cx = W / 2, cy = H / 2;
 const FONT = '"Plus Jakarta Sans"';
+const EN = Q.get('lang') === 'en';
+const TXT = EN ? {
+  q: ['Love a song', "you can't pronounce?"], orig: 'original lyric', phon: 'phonetic reading',
+  caps: [['one tap', ['Play the music,', 'Seyro listens.']], ['song recognition', ['Speaker, TV, YouTube…', 'recognized instantly.']],
+    ['synced lyrics', ['Lyrics start at', 'the exact moment.']], ['phonetic lyrics', ['Sing along without', 'knowing English.']],
+    ['import mp3', ['Upload your own MP3,', 'get phonetic lyrics.']], ['progress', ['A little more fluent', 'every day.']]],
+  slogan: ['Sing the songs you love,', 'in any language.'], badge: ['Download on the', 'App Store'],
+} : {
+  q: ['Sevdiğin şarkı', 'İngilizce mi?'], orig: 'orijinal söz', phon: 'türkçe okunuşu',
+  caps: [['tek dokunuş', ['Müziği aç,', 'Seyro dinlesin.']], ['şarkı tanıma', ['Hoparlör, TV, YouTube…', 'anında tanır.']],
+    ['senkron sözler', ['Sözler tam', 'kaldığı yerden.']], ['türkçe okunuş', ['İngilizce bilmeden', 'eşlik et.']],
+    ['mp3 yükle', ['Kendi şarkını yükle,', 'okunuşu hazır.']], ['ilerleme', ['Her gün biraz', 'daha akıcı.']]],
+  slogan: ['Bilmediğin dilde,', 'sevdiğin şarkıyı söyle.'], badge: ["App Store'dan", 'İndirin'],
+};
 
 const C = { bg: '#0B0B0E', lime: '#D8F53C', white: '#F4F4F6', gray: '#8A8A93', dim: '#3A3A41' };
 
@@ -414,14 +428,8 @@ function background(t) {
 }
 
 // ---------- başlıklar ----------
-const CAPS = [
-  [3.6, 5.4, 'tek dokunuş', ['Müziği aç,', 'Seyro dinlesin.']],
-  [5.4, 8.9, 'şarkı tanıma', ['Hoparlör, TV, YouTube…', 'anında tanır.']],
-  [8.9, 12.2, 'senkron sözler', ['Sözler tam', 'kaldığı yerden.']],
-  [12.2, 15.1, 'türkçe okunuş', ['İngilizce bilmeden', 'eşlik et.']],
-  [15.1, 18.3, 'mp3 yükle', ['Kendi şarkını yükle,', 'okunuşu hazır.']],
-  [18.3, 20.2, 'ilerleme', ['Her gün biraz', 'daha akıcı.']],
-];
+const CAP_T = [[3.6, 5.4], [5.4, 8.9], [8.9, 12.2], [12.2, 15.1], [15.1, 18.3], [18.3, 20.2]];
+const CAPS = CAP_T.map(([a, b], i) => [a, b, ...TXT.caps[i]]);
 function captions(t) {
   const size = 80 * u, lh = size * 1.08, x = 76 * u, ey = H * 0.108;
   for (const [a, b, eb, lines] of CAPS) {
@@ -449,7 +457,7 @@ function hook(t) {
   if (out >= 1) return;
   ctx.save(); ctx.globalAlpha = 1 - out; ctx.translate(0, -out * 60 * u);
   const qs = 70 * u;
-  const q = ['Sevdiğin şarkı', 'İngilizce mi?'];
+  const q = TXT.q;
   q.forEach((s, i) => reveal(ctx, s, cx, H * .33 + i * qs * 1.1, qs, 800, i ? C.lime : C.white, E.outExpo(prog(t, .05 + i * .1, .75 + i * .1)), { align: 'center', track: -0.04 }));
   // söz satırı: kelime kelime dönüşüm
   const en = HOOK[0].split(' '), tr = HOOK[1].split(' ');
@@ -474,7 +482,7 @@ function hook(t) {
     x += (ws[i] + sp) * fit;
   });
   // etiketler
-  const lab = t < 1.15 ? 'orijinal söz' : 'türkçe okunuşu';
+  const lab = t < 1.15 ? TXT.orig : TXT.phon;
   const lc = t < 1.15 ? '#6D6D78' : C.lime;
   reveal(ctx, lab, cx, y + 100 * u, 30 * u, 700, lc, tag, { align: 'center', track: 0.06 });
   ctx.restore();
@@ -526,8 +534,8 @@ function drawScene(t) {
     logoMark(ctx, cx, y, 100 * u * ip);
     reveal(ctx, 'Seyro', cx, y + 250 * u, 140 * u, 800, C.white, E.outExpo(prog(t, 20.6, 21.2)), { align: 'center', track: -0.05 });
     const tp = E.outExpo(prog(t, 20.9, 21.5));
-    reveal(ctx, 'Bilmediğin dilde,', cx, y + 360 * u, 46 * u, 700, C.white, tp, { align: 'center', track: -0.02 });
-    reveal(ctx, 'sevdiğin şarkıyı söyle.', cx, y + 420 * u, 46 * u, 700, C.lime, E.outExpo(prog(t, 21.0, 21.6)), { align: 'center', track: -0.02 });
+    reveal(ctx, TXT.slogan[0], cx, y + 360 * u, 46 * u, 700, C.white, tp, { align: 'center', track: -0.02 });
+    reveal(ctx, TXT.slogan[1], cx, y + 420 * u, 46 * u, 700, C.lime, E.outExpo(prog(t, 21.0, 21.6)), { align: 'center', track: -0.02 });
     badge(cx - 175 * u, y + 500 * u, 350 * u, 110 * u, E.outBack(prog(t, 21.3, 21.75), 2));
   }
   ctx.restore();
@@ -544,8 +552,8 @@ function badge(x, y, w, h, p) {
   const is = h * .5;
   ctx.save(); ctx.translate(x + h * .3, y + (h - is) / 2); ctx.scale(is / 24, is / 24); ctx.fillStyle = '#fff'; ctx.fill(APPLE); ctx.restore();
   const tx = x + h * .3 + is + h * .18;
-  text(ctx, "App Store'dan", tx, y + h * .4, h * .19, 500, '#fff', 'left', 0);
-  text(ctx, 'İndirin', tx, y + h * .8, h * .36, 700, '#fff', 'left', -0.02);
+  text(ctx, TXT.badge[0], tx, y + h * .4, h * .19, 500, '#fff', 'left', 0);
+  text(ctx, TXT.badge[1], tx, y + h * .8, h * .36, 700, '#fff', 'left', -0.02);
   ctx.restore();
 }
 

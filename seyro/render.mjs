@@ -17,8 +17,9 @@ const DUR = 23;
 const FFMPEG = process.env.FFMPEG ||
   execSync(`python3 -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())"`).toString().trim();
 
+const LANG = process.env.LANG_V === 'en' ? 'en' : 'tr';
 const FORMATS = [
-  { w: 1080, h: 1920, fps: 60, name: 'seyro-reels-tr-1080x1920.mp4' },
+  { w: 1080, h: 1920, fps: 60, name: `seyro-reels-${LANG}-1080x1920.mp4` },
 ];
 
 const TYPES = { '.html': 'text/html', '.woff2': 'font/woff2', '.webp': 'image/webp' };
@@ -34,7 +35,7 @@ const browser = await chromium.launch();
 
 async function open(w, h, fps = 60) {
   const page = await browser.newPage({ viewport: { width: 400, height: 400 } });
-  await page.goto(`http://localhost:${port}/seyro/seyro.html?w=${w}&h=${h}&fps=${fps}&render=1`);
+  await page.goto(`http://localhost:${port}/seyro/seyro.html?w=${w}&h=${h}&fps=${fps}&render=1&lang=${LANG}`);
   await page.evaluate(() => window.ready);
   return page;
 }
