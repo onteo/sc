@@ -9,11 +9,11 @@
 <canvas id="c"></canvas>
 <script>
 /*
- * YouTube bölümü — "Standart bir kartvizitte olması gerekenler" (1920×1080, 5 sn)
+ * YouTube bölümü — "Standart bir kartvizitte olması gerekenler" (1920×1080, 15 sn)
  * Kartvizit solda gelir, sağda 5 madde sırayla açılır; her madde kartvizitte ilgili alanı vurgular.
  */
 const Q = new URLSearchParams(location.search);
-const W = 1920, H = 1080, DUR = 5, FPS = +Q.get('fps') || 60, RENDER = Q.has('render');
+const W = 1920, H = 1080, DUR = 15, FPS = +Q.get('fps') || 60, RENDER = Q.has('render');
 const BLUE = '#1565E8', NAVY = '#0B1B3F', SOFT = '#9DBDF5';
 const out = document.getElementById('c'); out.width = W; out.height = H;
 const octx = out.getContext('2d');
@@ -137,7 +137,7 @@ function toScreen(T, px, py) {
 
 // ---- maddeler ----
 const ITEMS = ['Firmanın logosu', 'Kartvizit sahibinin adı ve unvanı', 'Firmanın iletişim bilgileri', 'Sosyal medya adresleri', 'Hızlı iletişim için QR kod'];
-const IT0 = 1.45, IDT = .55, LX = W * .545, LY0 = 372, LDY = 122;
+const IT0 = 2.0, IDT = 2.4, LX = W * .545, LY0 = 372, LDY = 122;
 function items(t, T) {
   ITEMS.forEach((s, i) => {
     const t0 = IT0 + i * IDT;

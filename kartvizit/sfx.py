@@ -7,7 +7,7 @@ from scipy.io import wavfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'animation'))
 import synth  # noqa: E402
-synth.set_duration(5.0)
+synth.set_duration(15.0)
 from synth import *  # noqa: E402,F401,F403
 
 SR, N = synth.SR, synth.N
@@ -34,7 +34,7 @@ sfx.add(c, 1.35, gain=.06)
 send.add(c, 1.35, gain=.1)
 # maddeler: tık + yükselen çan (C E G A C)
 for i, m in enumerate([84, 88, 91, 93, 96]):
-    t0 = 1.45 + i * .55
+    t0 = 2.0 + i * 2.4
     sfx.add(tick(), t0, gain=.45)
     sfx.add(np.sin(2 * np.pi * 220 * tt(.03)) * np.exp(-tt(.03) * 150), t0, gain=.3)
     c = chime(m, 1.1)
@@ -45,7 +45,7 @@ for i, m in enumerate([84, 88, 91, 93, 96]):
 wet = reverb(send.x, 1.4)
 mix = sfx.x + wet * .45
 t_all = np.arange(N) / SR
-mix *= np.clip((5.0 - t_all) / .25, 0, 1)
+mix *= np.clip((15.0 - t_all) / .25, 0, 1)
 mix /= np.max(np.abs(mix)) / .9
 wavfile.write(os.path.join(os.path.dirname(__file__), 'sfx.wav'), SR, (mix.T * 32767).astype(np.int16))
 print('ok')

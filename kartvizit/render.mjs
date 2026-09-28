@@ -1,4 +1,4 @@
-// Kartvizit bölümü render'ı (5 sn, müziksiz, efektli)
+// Kartvizit bölümü render'ı (15 sn, müziksiz, efektli)
 //   node render.mjs                  -> tüm formatlar (../videos) + müzik
 //   node render.mjs mux              -> sadece müziği yeniden ekler
 //   node render.mjs stills 1080x1920 [zamanlar] [klasör]
@@ -13,7 +13,7 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, '..');
 const OUT = path.join(ROOT, 'videos');
 const AUDIO = path.join(ROOT, 'kartvizit/sfx.wav');
-const DUR = 5;
+const DUR = 15;
 const FFMPEG = process.env.FFMPEG ||
   execSync(`python3 -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())"`).toString().trim();
 
@@ -74,7 +74,7 @@ function mux(name) {
 await mkdir(OUT, { recursive: true });
 if (process.argv[2] === 'stills') {
   const [w, h] = (process.argv[3] || '1080x1920').split('x').map(Number);
-  const times = (process.argv[4] || '0.4,0.9,1.3,1.8,2.7,3.8,4.9').split(',').map(Number);
+  const times = (process.argv[4] || '1.3,2.3,7.0,12.2,14.9').split(',').map(Number);
   const dir = process.argv[5] || path.join(DIR, 'stills');
   await mkdir(dir, { recursive: true });
   const page = await open(w, h);
