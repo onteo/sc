@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>baskı özellikleri bölümü</title>
+<style>html,body{margin:0;background:#000;height:100%}body{display:grid;place-items:center}canvas{max-width:100vw;max-height:100vh}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * YouTube bölümü — "Kartvizite eklenebilecek baskı özellikleri" (1920×1080, 15 sn)
+ * Her madde, kartvizit görselinin üzerinde canlandırılır: kısmi lak parlaması, oval köşe, gofre kabartma,
+ * yaldız (altın varak), selefon parlaması, özel kâğıt dokusu. Kartın üzerinde numara yoktur.
+ */
+const Q = new URLSearchParams(location.search);
+const W = 1920, H = 1080, DUR = 15, FPS = +Q.get('fps') || 60, RENDER = Q.has('render');
+const BLUE = '#1565E8', NAVY = '#0B1B3F', SOFT = '#9DBDF5', GOLD = '#D9A93A';
+const out = document.getElementById('c'); out.width = W; out.height = H;
+const octx = out.getContext('2d');
+const mk = (w = W, h = H) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const buf = mk(), ctx = buf.getContext('2d');
+
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, p) => a + (b - a) * p;
+const E = {
+  outExpo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  outCubic: x => 1 - Math.pow(1 - x, 3),
+  outQuint: x => 1 - Math.pow(1 - x, 5),
+  inOutCubic: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  outBack: (x, s = 1.70158) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2),
+};
+function font(size, w) { ctx.font = `${w} ${size}px Inter`; }
+function measure(s, size, w, tr = 0) { font(size, w); ctx.letterSpacing = `${tr * size}px`; const m = ctx.measureText(s).width; ctx.letterSpacing = '0px'; return m; }
+function text(s, x, y, size, w, col, align = 'left', tr = 0, a = 1) { ctx.save(); font(size, w); ctx.letterSpacing = `${tr * size}px`; ctx.textAlign = align; ctx.fillStyle = col; ctx.globalAlpha *= a; ctx.fillText(s, x, y); ctx.restore(); }
+function reveal(s, x, y, size, w, col, p, tr = -0.025) {
+  const wd = measure(s, size, w, tr);
+  if (p <= 0) return wd;
+  ctx.save(); ctx.beginPath(); ctx.rect(x - 10, y - size * 1.05, wd + 20, size * 1.4); ctx.clip();
+  text(s, x, y + (1 - p) * size * 1.2, size, w, col, 'left', tr); ctx.restore();
+  return wd;
+}
+function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function circle(x, y, r, f) { if (r <= 0) return; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = f; ctx.fill(); }
+
+// ---- görsel ve maskeler (görsel koordinatlarında, 1536×1024) ----
+let IMG; const IW = 1536, IH = 1024;
+let M = {};   // lak, foil, emboss, cards
+function buildMasks() {
+  const c = mk(IW, IH), g = c.getContext('2d', { willReadFrequently: true });
+  g.drawImage(IMG, 0, 0);
+  const src = g.getImageData(0, 0, IW, IH).data;
+  const make = f => {
+    const m = mk(IW, IH), mg = m.getContext('2d'), d = mg.createImageData(IW, IH);
+    for (let y = 0; y < IH; y++) for (let x = 0; x < IW; x++) {
+      const i = (y * IW + x) * 4, a = f(src[i], src[i + 1], src[i + 2], src[i + 3], x, y);
+      d.data[i] = d.data[i + 1] = d.data[i + 2] = 255; d.data[i + 3] = a * 255;
+    }
+    mg.putImageData(d, 0, 0); return m;
+  };
+  const frontEdge = x => 660 - (x - 420) * .243;       // ön kartın alt kenarı
+  // kısmi lak: ön kartın mavi kavisli alanı
+  M.lak = make((r, g2, b, a, x, y) => (x > 880 && y < frontEdge(x) - 6) ? clamp((b - r - 60) / 80) * (a / 255) : 0);
+  // yaldız: ön kart logosu (beyaz üzerinde koyu/mavi harfler)
+  M.foil = make((r, g2, b, a, x, y) => (x > 355 && x < 705 && y > 165 && y < 285) ? clamp((215 - Math.min(r, g2, b)) / 90) : 0);
+  // gofre: arka kart logosu (mavi üzerinde açık harfler)
+  M.emb = make((r, g2, b, a, x, y) => (x > 560 && x < 945 && y > 650 && y < 775) ? clamp((r - 110) / 90) : 0);
+  // özel kâğıt: ön kartın beyaz alanı
+  M.paper = make((r, g2, b, a, x, y) => (y < frontEdge(x) - 4 && x < 900) ? clamp((Math.min(r, g2, b) - 200) / 40) * (a / 255) : 0);
+  // tüm kartlar (selefon)
+  M.cards = make((r, g2, b, a) => a / 255);
+  // renklendirilmiş kopyalar
+  const tint = (m, col) => { const t2 = mk(IW, IH), tg = t2.getContext('2d'); tg.drawImage(m, 0, 0); tg.globalCompositeOperation = 'source-in'; tg.fillStyle = col; tg.fillRect(0, 0, IW, IH); return t2; };
+  M.embDark = tint(M.emb, '#001040'); M.embLight = tint(M.emb, '#FFFFFF');
+  // altın gradyan harfler
+  const gold = mk(IW, IH), gg = gold.getContext('2d');
+  const gr = gg.createLinearGradient(360, 290, 700, 160);
+  gr.addColorStop(0, '#8A5A12'); gr.addColorStop(.3, '#E9C46A'); gr.addColorStop(.5, '#FFF1B8'); gr.addColorStop(.7, '#D4A032'); gr.addColorStop(1, '#8A5A12');
+  gg.fillStyle = gr; gg.fillRect(0, 0, IW, IH); gg.globalCompositeOperation = 'destination-in'; gg.drawImage(M.foil, 0, 0);
+  M.gold = gold;
+  // kâğıt dokusu
+  const tex = mk(IW, IH), xg = tex.getContext('2d');
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  xg.fillStyle = 'rgba(120,110,90,.5)';
+  for (let i = 0; i < 26000; i++) xg.fillRect(rnd() * IW, rnd() * IH, 1 + rnd() * 2, 1);
+  xg.strokeStyle = 'rgba(120,110,90,.25)';
+  for (let y = 0; y < IH; y += 4) { xg.beginPath(); xg.moveTo(0, y); xg.lineTo(IW, y + 60); xg.stroke(); }
+  xg.globalCompositeOperation = 'destination-in'; xg.drawImage(M.paper, 0, 0);
+  M.tex = tex;
+}
+
+// ---- arka plan ----
+function background(t) {
+  const g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, '#F8FAFF'); g.addColorStop(1, '#E4EDFF');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const rg = ctx.createRadialGradient(W * .3, H * .6, 0, W * .3, H * .6, W * .45);
+  rg.addColorStop(0, 'rgba(21,101,232,.10)'); rg.addColorStop(1, 'rgba(21,101,232,0)');
+  ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+  const S = 72, off = (t * 36) % S;
+  ctx.save(); ctx.strokeStyle = 'rgba(21,101,232,.075)'; ctx.lineWidth = 1.5;
+  for (let x = (W / 2) % S; x < W; x += S) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = off - S; y < H; y += S) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.fillStyle = 'rgba(21,101,232,.16)';
+  for (let x = (W / 2) % S; x < W; x += S) for (let y = off - S; y < H; y += S) ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+  ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, W * .62);
+  v.addColorStop(0, 'rgba(240,245,255,0)'); v.addColorStop(1, 'rgba(240,245,255,.95)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+// ---- başlık ----
+function title(t) {
+  const ep = E.outExpo(prog(t, .05, .6));
+  const lab = 'BASKI TEKNİKLERİ';
+  const lw = measure(lab, 20, 700, .18) + 44;
+  ctx.save(); ctx.globalAlpha = ep; ctx.translate(0, (1 - ep) * 16);
+  rrect(W / 2 - lw / 2, 78, lw, 44, 22); ctx.fillStyle = 'rgba(21,101,232,.1)'; ctx.fill();
+  text(lab, W / 2, 107, 20, 700, BLUE, 'center', .18);
+  ctx.restore();
+  const words = [['Kartvizite', NAVY], ['eklenebilecek', NAVY], ['baskı', BLUE], ['özellikleri', BLUE]];
+  const size = 66, gap = 18;
+  const tot = words.reduce((s, [w]) => s + measure(w, size, 800, -.03), 0) + gap * (words.length - 1);
+  let x = W / 2 - tot / 2;
+  words.forEach(([w, c], i) => {
+    const p = E.outExpo(prog(t, .12 + i * .07, .8 + i * .07));
+    const wd = reveal(w, x, 205, size, 800, c, p, -.03);
+    if (i === 3) { const lp = E.inOutCubic(prog(t, .7, 1.1)); ctx.fillStyle = BLUE; rrect(x, 222, wd * lp, 7, 3.5); ctx.fill(); }
+    x += wd + gap;
+  });
+}
+
+// ---- kartvizit ----
+const CW = 1000, k = CW / IW, CH = IH * k, CX = W * .285, CY = H * .6;
+function cardT(t) {
+  const p = E.outQuint(prog(t, .5, 1.35));
+  return { x: CX, y: CY + (1 - p) * 300 + Math.sin(t * 1.4) * 5, rot: lerp(.12, 0, p) + Math.sin(t * .9) * .006, s: lerp(.85, 1, p), a: clamp(p * 2.5) };
+}
+function withCard(T, fn) {
+  ctx.save(); ctx.translate(T.x, T.y); ctx.rotate(T.rot); ctx.scale(T.s * k, T.s * k); ctx.translate(-IW / 2, -IH / 2); fn(); ctx.restore();
+}
+function toScreen(T, px, py) {
+  const lx = (px - IW / 2) * k * T.s, ly = (py - IH / 2) * k * T.s;
+  return [T.x + lx * Math.cos(T.rot) - ly * Math.sin(T.rot), T.y + lx * Math.sin(T.rot) + ly * Math.cos(T.rot)];
+}
+// maske içinde kayan parlama (lak / selefon)
+const shineC = mk(IW, IH), shg = shineC.getContext('2d');
+function shine(mask, pos, width, alpha, angle = .5) {
+  shg.clearRect(0, 0, IW, IH); shg.globalCompositeOperation = 'source-over';
+  shg.save(); shg.translate(lerp(-400, IW + 400, pos), IH / 2); shg.rotate(angle);
+  const g = shg.createLinearGradient(-width, 0, width, 0);
+  g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(.5, `rgba(255,255,255,${alpha})`); g.addColorStop(1, 'rgba(255,255,255,0)');
+  shg.fillStyle = g; shg.fillRect(-width, -IH * 2, width * 2, IH * 4); shg.restore();
+  shg.globalCompositeOperation = 'destination-in'; shg.drawImage(mask, 0, 0);
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(shineC, 0, 0); ctx.restore();
+}
+
+const IT0 = 2.0, IDT = 1.95;
+const tI = i => IT0 + i * IDT;
+function card(t) {
+  const T = cardT(t);
+  if (T.a <= 0) return T;
+  ctx.save(); ctx.globalAlpha = T.a;
+  withCard(T, () => {
+    ctx.save(); ctx.shadowColor = 'rgba(11,27,63,.25)'; ctx.shadowBlur = 90; ctx.shadowOffsetY = 50;
+    ctx.imageSmoothingQuality = 'high'; ctx.drawImage(IMG, 0, 0); ctx.restore();
+
+    // 1) kısmi lak: mavi alanlarda tekrarlayan parlama
+    if (t > tI(0)) {
+      const a = t < tI(1) ? 1 : .55;
+      const cyc = ((t - tI(0)) / 1.3) % 1;
+      shine(M.lak, cyc, 140, .75 * a);
+      if (t < tI(1)) { ctx.save(); ctx.globalAlpha = .18 * Math.sin(prog(t, tI(0), tI(0) + .6) * Math.PI); ctx.globalCompositeOperation = 'lighter'; ctx.drawImage(M.lak, 0, 0); ctx.restore(); }
+    }
+    // 3) gofre: arka logo kabartma (ışık üstten-soldan)
+    const ge = E.outCubic(prog(t, tI(2), tI(2) + .6));
+    if (ge > 0) {
+      const d = 5 * ge;
+      ctx.save(); ctx.filter = 'blur(2px)';
+      ctx.globalAlpha = .55 * ge; ctx.drawImage(M.embDark, d, d * 1.2);
+      ctx.globalAlpha = .8 * ge; ctx.drawImage(M.embLight, -d * .6, -d * .7);
+      ctx.restore();
+      // harflerin kendisi üstte
+      ctx.save(); ctx.globalAlpha = ge; const tmp2 = mk(IW, IH), t2 = tmp2.getContext('2d');
+      t2.drawImage(IMG, 0, 0); t2.globalCompositeOperation = 'destination-in'; t2.drawImage(M.emb, 0, 0); ctx.drawImage(tmp2, 0, 0); ctx.restore();
+    }
+    // 4) yaldız: ön logo altın varak + ışıltı
+    const fe = E.outCubic(prog(t, tI(3), tI(3) + .7));
+    if (fe > 0) {
+      ctx.save(); ctx.beginPath(); ctx.rect(0, 0, lerp(340, 720, fe), IH); ctx.clip();
+      ctx.drawImage(M.gold, 0, 0); ctx.restore();
+      const cyc = ((t - tI(3)) / 1.6) % 1;
+      shine(M.foil, cyc, 60, t < tI(4) ? .9 : .6, .6);
+    }
+    // 5) selefon: tüm kart yüzeyinde geniş, yumuşak parlama
+    const sp = prog(t, tI(4) + .1, tI(4) + 1.3);
+    if (sp > 0 && sp < 1) shine(M.cards, E.inOutCubic(sp), 320, .45, .35);
+    // 6) özel kâğıt: doku
+    const pe = E.outCubic(prog(t, tI(5), tI(5) + .6)) * (t > tI(5) + 2.4 ? .6 : 1);
+    if (pe > 0) { ctx.save(); ctx.globalAlpha = .35 * pe; ctx.globalCompositeOperation = 'multiply'; ctx.drawImage(M.tex, 0, 0); ctx.restore(); }
+  });
+  ctx.restore();
+  // 2) özel kenar: oval köşeler (ekran koordinatlarında)
+  const cp = E.outBack(prog(t, tI(1), tI(1) + .35), 2);
+  const ca = t < tI(2) ? 1 : 1 - prog(t, tI(2), tI(2) + .5);
+  if (cp > 0 && ca > 0) {
+    const corners = [[300, 197, -2.05], [1092, 38, -.55], [1272, 443, .95], [433, 648, 2.45], [168, 832, 2.3], [1160, 588, -.4]];
+    corners.forEach(([x, y, ang], j) => {
+      const [sx, sy] = toScreen(T, x, y);
+      const p = E.outBack(prog(t, tI(1) + j * .06, tI(1) + .35 + j * .06), 2) * ca;
+      if (p <= 0) return;
+      ctx.save(); ctx.translate(sx, sy); ctx.rotate(ang + T.rot);
+      ctx.strokeStyle = BLUE; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.shadowColor = 'rgba(21,101,232,.6)'; ctx.shadowBlur = 16;
+      ctx.beginPath(); ctx.arc(0, 0, 26 * p, -Math.PI * .5, Math.PI * .5 * (2 * p - 1)); ctx.stroke();
+      const pu = ((t - tI(1)) * 1.4) % 1;
+      ctx.globalAlpha = (1 - pu) * .6; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(0, 0, 26 + pu * 26, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    });
+    // "R" etiketi
+    const [lx, ly] = toScreen(T, 1092, 38);
+    ctx.save(); ctx.globalAlpha = ca * clamp(cp); ctx.translate(lx + 36, ly - 30); ctx.scale(cp, cp);
+    rrect(0, -22, 118, 44, 22); ctx.fillStyle = BLUE; ctx.fill(); text('R 4 mm', 59, 8, 22, 800, '#fff', 'center');
+    ctx.restore();
+  }
+  return T;
+}
+
+// ---- maddeler ----
+const ITEMS = [
+  ['Kısmi lak', 'Belirli alanlara parlaklık'],
+  ['Özel kesim kenar', 'Oval köşe, farklı formlar'],
+  ['Gofre', 'Kabartma efekti'],
+  ['Yaldız', 'Altın / gümüş varak'],
+  ['Selefon', 'Mat veya parlak kaplama'],
+  ['Özel kâğıt', 'Dokulu, kalın, kraft kâğıtlar'],
+];
+const LX = W * .575, LY0 = 330, LDY = 108;
+function items(t) {
+  ITEMS.forEach(([s, sub], i) => {
+    const t0 = tI(i), next = i < ITEMS.length - 1 ? tI(i + 1) : 99;
+    const y = LY0 + i * LDY, act = t >= t0 && t < next;
+    const p = E.outExpo(prog(t, t0 + .05, t0 + .75)), bp = E.outBack(prog(t, t0, t0 + .35), 2.2);
+    if (bp <= 0) return;
+    const accent = i === 3 ? GOLD : BLUE;
+    ctx.save(); ctx.globalAlpha = t >= next ? .78 : 1;
+    const tw = Math.max(measure(s, 36, 800, -.02), measure(sub, 22, 500));
+    const rw = (tw + 140) * E.outExpo(prog(t, t0, t0 + .6));
+    ctx.save(); ctx.shadowColor = 'rgba(11,27,63,.08)'; ctx.shadowBlur = 30; ctx.shadowOffsetY = 10;
+    rrect(LX - 10, y - 46, rw, 92, 46); ctx.fillStyle = act ? '#fff' : 'rgba(255,255,255,.7)'; ctx.fill(); ctx.restore();
+    if (act) { ctx.lineWidth = 2; ctx.strokeStyle = i === 3 ? 'rgba(217,169,58,.6)' : 'rgba(21,101,232,.35)'; rrect(LX - 10, y - 46, rw, 92, 46); ctx.stroke(); }
+    ctx.save(); ctx.translate(LX + 36, y); ctx.scale(bp, bp);
+    circle(0, 0, 30, accent);
+    const ck = prog(t, t0 + .15, t0 + .4);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(-11, 1);
+    if (ck < .4) ctx.lineTo(lerp(-11, -3, ck / .4), lerp(1, 9, ck / .4));
+    else { ctx.lineTo(-3, 9); const q = (ck - .4) / .6; ctx.lineTo(lerp(-3, 12, q), lerp(9, -8, q)); }
+    if (ck > 0) ctx.stroke();
+    ctx.restore();
+    reveal(s, LX + 88, y - 2, 36, 800, NAVY, p, -.02);
+    reveal(sub, LX + 88, y + 30, 22, 500, '#6B7A99', E.outExpo(prog(t, t0 + .15, t0 + .85)), 0);
+    ctx.restore();
+  });
+}
+
+function drawScene(t) {
+  ctx.save(); ctx.letterSpacing = '0px';
+  background(t); title(t); card(t); items(t);
+  ctx.restore();
+}
+const SAMPLES = RENDER ? 4 : 1;
+function renderAt(t) {
+  t = clamp(t, 0, DUR - 1e-4);
+  if (SAMPLES === 1) { drawScene(t); octx.drawImage(buf, 0, 0); return; }
+  const sh = .5 / FPS;
+  for (let s = 0; s < SAMPLES; s++) { drawScene(clamp(t + (s / (SAMPLES - 1) - .5) * sh, 0, DUR - 1e-4)); octx.globalAlpha = 1 / (s + 1); octx.drawImage(buf, 0, 0); }
+  octx.globalAlpha = 1;
+}
+window.renderAt = renderAt;
+const LAT = 'U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD';
+const EXT = 'U+0100-0130,U+0132-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+1E00-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF';
+const faces = [
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-wght-normal.woff2)', { weight: '100 900', unicodeRange: LAT }),
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-ext-wght-normal.woff2)', { weight: '100 900', unicodeRange: EXT }),
+];
+window.ready = Promise.all([...faces.map(f => f.load()), new Promise(r => { const i = new Image(); i.onload = () => { IMG = i; r(); }; i.src = 'kartvizit2.png'; })])
+  .then(fs => { fs.slice(0, 2).forEach(f => document.fonts.add(f)); buildMasks(); return document.fonts.load('800 60px Inter', 'ğşıİâ'); })
+  .then(() => {
+    if (!RENDER) { const t0 = performance.now(); const loop = now => { renderAt(((now - t0) / 1000) % DUR); requestAnimationFrame(loop); }; requestAnimationFrame(loop); }
+    return true;
+  });
+</script>
+</body>
+</html>

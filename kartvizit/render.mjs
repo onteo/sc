@@ -12,13 +12,14 @@ import { fileURLToPath } from 'node:url';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, '..');
 const OUT = path.join(ROOT, 'videos');
-const AUDIO = path.join(ROOT, 'kartvizit/sfx.wav');
+const BASKI = process.env.PAGE === 'baski';
+const AUDIO = path.join(ROOT, BASKI ? 'kartvizit/sfx2.wav' : 'kartvizit/sfx.wav');
 const DUR = 15;
 const FFMPEG = process.env.FFMPEG ||
   execSync(`python3 -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())"`).toString().trim();
 
 const FORMATS = [
-  { w: 1920, h: 1080, fps: 60, name: 'kartvizit-bolum-1920x1080.mp4' },
+  { w: 1920, h: 1080, fps: 60, name: BASKI ? 'baski-ozellikleri-bolum-1920x1080.mp4' : 'kartvizit-bolum-1920x1080.mp4' },
 ];
 
 const TYPES = { '.html': 'text/html', '.woff2': 'font/woff2', '.webp': 'image/webp' };
@@ -34,7 +35,7 @@ const browser = await chromium.launch();
 
 async function open(w, h, fps = 60) {
   const page = await browser.newPage({ viewport: { width: 400, height: 400 } });
-  await page.goto(`http://localhost:${port}/kartvizit/kartvizit.html?w=${w}&h=${h}&fps=${fps}&render=1`);
+  await page.goto(`http://localhost:${port}/kartvizit/${BASKI ? 'baski' : 'kartvizit'}.html?w=${w}&h=${h}&fps=${fps}&render=1`);
   await page.evaluate(() => window.ready);
   return page;
 }
