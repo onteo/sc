@@ -898,10 +898,14 @@ function drawScene(t, ft) {
   } else if (t < T.congrats) {
     // koyu taşma + YouTube dünyası + analitik
     stageBg();
-    const fr = EZ(prog(t, T.drop, T.drop + .4)) * Math.hypot(W, H);
+    // alan doğrusal büyür (r ∝ √ilerleme) → ekran tek karede kararmaz
+    const fp = prog(t, T.drop, T.drop + .8), fr = Math.sqrt(fp * fp * (3 - 2 * fp)) * Math.hypot(W, H);
     ctx.fillStyle = COL.yt; ctx.beginPath(); ctx.arc(cx + 6, DOT_Y + 8, fr, 0, Math.PI * 2); ctx.fill();
     camera(t);
     const contentA = IN2(t, T.pull);
+    // taşma bitene kadar tüm YouTube dünyası taşma dairesinin içinde kalır
+    ctx.save();
+    if (t < T.drop + .8) { ctx.beginPath(); ctx.arc(cx + 6, DOT_Y + 8, Math.max(1, fr), 0, Math.PI * 2); ctx.clip(); }
     withCam(() => {
       if (t < T.pan + MD + .2) ytPage(t, ft, contentA);
       analytics(t, ft);
@@ -914,6 +918,7 @@ function drawScene(t, ft) {
         ctx.restore();
       }
     });
+    ctx.restore();
     // play üçgeni ekran uzayında: tıklama anındaki konumdan kamerayla birlikte küçülür
     const pa = t < T.play ? 1 : OUT2(t, T.play, .5);
     if (pa > 0) {
