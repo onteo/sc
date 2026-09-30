@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>infoakademi end screen</title>
+<style>html,body{margin:0;background:#000;height:100%}body{display:grid;place-items:center}canvas{max-width:100vw;max-height:100vh}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * YouTube bitiş ekranı — 1920×1080, 6 sn
+ * Logo → "infoakademi" logonun arkasından kayar → Kayıt ol / İzle / Sertifikanı al (imleç sırayla tıklar,
+ * ilerleme çizgisi dolar) → "seviye yükselten eğitimler". Zamanlar 120 BPM ızgarasında.
+ */
+const Q = new URLSearchParams(location.search);
+const W = 1920, H = 1080, DUR = 6, FPS = +Q.get('fps') || 60, RENDER = Q.has('render');
+const BLUE = '#2563EB', BLUE2 = '#4A90F7', NAVY = '#0B1B3F';
+const out = document.getElementById('c'); out.width = W; out.height = H;
+const octx = out.getContext('2d');
+const buf = document.createElement('canvas'); buf.width = W; buf.height = H;
+const ctx = buf.getContext('2d');
+
+const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+const prog = (t, a, b) => clamp((t - a) / (b - a));
+const lerp = (a, b, p) => a + (b - a) * p;
+const E = {
+  outExpo: x => x >= 1 ? 1 : 1 - Math.pow(2, -10 * x),
+  outCubic: x => 1 - Math.pow(1 - x, 3),
+  outQuint: x => 1 - Math.pow(1 - x, 5),
+  inOutCubic: x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2,
+  inOutQuint: x => x < .5 ? 16 * x ** 5 : 1 - Math.pow(-2 * x + 2, 5) / 2,
+  outBack: (x, s = 1.70158) => 1 + (s + 1) * Math.pow(x - 1, 3) + s * Math.pow(x - 1, 2),
+};
+// yay (sönümlü salınım): 0 → 1, taşarak oturur
+const spring = (dt, f = 5, d = 5) => dt <= 0 ? 0 : 1 - Math.exp(-d * dt) * Math.cos(2 * Math.PI * f * dt);
+function font(size, w) { ctx.font = `${w} ${size}px Inter`; }
+function measure(s, size, w, tr = 0) { font(size, w); ctx.letterSpacing = `${tr * size}px`; const m = ctx.measureText(s).width; ctx.letterSpacing = '0px'; return m; }
+function text(s, x, y, size, w, col, align = 'left', tr = 0, a = 1) { ctx.save(); font(size, w); ctx.letterSpacing = `${tr * size}px`; ctx.textAlign = align; ctx.fillStyle = col; ctx.globalAlpha *= a; ctx.fillText(s, x, y); ctx.restore(); }
+function rrect(x, y, w, h, r) { r = Math.min(r, w / 2, h / 2); ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function circle(x, y, r, f) { if (r <= 0) return; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = f; ctx.fill(); }
+function hexA(h, a) { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; }
+
+let LOGO;
+// ---- yerleşim (fontlar yüklendikten sonra hesaplanır) ----
+let L = {};
+function layout() {
+  const LG = 190;                                  // logo boyu
+  font(100, 800); ctx.letterSpacing = `${-0.045 * 100}px`;
+  const m = ctx.measureText('infoakademi');
+  const asc = m.actualBoundingBoxAscent / 100;     // taban çizgisinden en üste (harf başına)
+  const F = LG / asc;                              // yazı yüksekliği = logo yüksekliği
+  const wInfo = measure('info', F, 800, -.045), wAk = measure('akademi', F, 800, -.045);
+  ctx.letterSpacing = '0px';
+  const gap = LG * .22, total = LG + gap + wInfo + wAk;
+  const x0 = W / 2 - total / 2, top = H * .36 - LG / 2;
+  L = { LG, F, gap, total, x0, top, wInfo, wAk, tx: x0 + LG + gap, base: top + LG };
+}
+
+// ---- arka plan ----
+function background(t) {
+  const g = ctx.createLinearGradient(0, 0, W, H);
+  g.addColorStop(0, '#F8FAFF'); g.addColorStop(1, '#E3ECFF');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const pulse = E.outExpo(prog(t, .3, 1.2));
+  const rg = ctx.createRadialGradient(W / 2, H * .38, 0, W / 2, H * .38, W * .5);
+  rg.addColorStop(0, `rgba(37,99,235,${.1 * pulse})`); rg.addColorStop(1, 'rgba(37,99,235,0)');
+  ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+  const S = 72, off = (t * 36) % S;
+  ctx.save(); ctx.strokeStyle = 'rgba(37,99,235,.07)'; ctx.lineWidth = 1.5;
+  for (let x = (W / 2) % S; x < W; x += S) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = off - S; y < H; y += S) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  ctx.fillStyle = 'rgba(37,99,235,.15)';
+  for (let x = (W / 2) % S; x < W; x += S) for (let y = off - S; y < H; y += S) ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
+  ctx.restore();
+  const v = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, W * .62);
+  v.addColorStop(0, 'rgba(240,245,255,0)'); v.addColorStop(1, 'rgba(240,245,255,.95)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+}
+
+// ---- logo + yazı ----
+function lockup(t) {
+  const { LG, F, x0, top, tx, base } = L;
+  // yazı logonun arkasından (logonun sağ kenarından) kayarak çıkar
+  // logo önce ortada belirir, sonra sola kayarken yazı arkasından çıkar
+  const mv = E.inOutQuint(prog(t, .45, 1.2));
+  const lcx = lerp(W / 2, x0 + LG / 2, mv), lcy = top + LG / 2;
+  const slide = E.outQuint(prog(t, .6, 1.4));
+  const clipX = lcx;
+  ctx.save(); ctx.beginPath(); ctx.rect(clipX, top - LG * .4, W, LG * 1.8); ctx.clip();
+  const chars = [...'infoakademi'];
+  let x = lcx + LG / 2 + L.gap - (1 - slide) * (L.wInfo + L.wAk) * .75;
+  font(F, 800); ctx.letterSpacing = `${-0.045 * F}px`;
+  chars.forEach((ch, i) => {
+    const cw = measure(ch, F, 800, -.045);
+    const lp = E.outExpo(prog(t, .6 + i * .03, 1.3 + i * .03));
+    const col = i < 4 ? NAVY : BLUE;
+    ctx.save(); ctx.globalAlpha = clamp(lp * 1.4);
+    text(ch, x, base + (1 - lp) * F * .18, F, 800, col, 'left', -.045);
+    ctx.restore(); x += cw;
+  });
+  ctx.restore();
+  // logo: yay ile büyür, hafif döner, şok halkası
+  const s = spring(t - .12, 1.6, 6), rot = (1 - E.outExpo(prog(t, .12, .8))) * -.35;
+  const ring = prog(t, .2, .75);
+  if (ring > 0 && ring < 1) {
+    ctx.save(); ctx.globalAlpha = (1 - ring) * .6; ctx.strokeStyle = BLUE; ctx.lineWidth = 10 * (1 - ring) + 1;
+    ctx.beginPath(); ctx.arc(lcx, lcy, LG * (.55 + ring * 1.1), 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+  }
+  if (s > 0) {
+    ctx.save(); ctx.translate(lcx, lcy); ctx.rotate(rot); ctx.scale(s, s);
+    ctx.shadowColor = 'rgba(37,99,235,.35)'; ctx.shadowBlur = 50; ctx.shadowOffsetY = 18;
+    ctx.drawImage(LOGO, -LG / 2, -LG / 2, LG, LG);
+    ctx.shadowColor = 'transparent';
+    // parıltı
+    const sh = prog(t, 4.9, 5.5);
+    if (sh > 0 && sh < 1) {
+      ctx.save(); rrect(-LG / 2, -LG / 2, LG, LG, LG * .24); ctx.clip();
+      ctx.translate(lerp(-LG, LG, E.inOutCubic(sh)), 0); ctx.rotate(.5);
+      const g = ctx.createLinearGradient(-40, 0, 40, 0); g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(.5, 'rgba(255,255,255,.7)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g; ctx.fillRect(-40, -LG, 80, LG * 2); ctx.restore();
+    }
+    ctx.restore();
+  }
+}
+
+// ---- butonlar ----
+const BTN = [['Kayıt ol', 'user'], ['İzle', 'play'], ['Sertifikanı al', 'badge']];
+const CLICK = [2.5, 3.1, 3.7];
+const BY = H * .64, BH = 96, BFS = 36;
+let BX = [];
+function btnLayout() {
+  const ws = BTN.map(([s]) => measure(s, BFS, 700, -.01) + 150);
+  const gap = 90, tot = ws.reduce((a, b) => a + b, 0) + gap * 2;
+  let x = W / 2 - tot / 2;
+  BX = ws.map(w => { const r = { x, w, cx: x + w / 2 }; x += w + gap; return r; });
+}
+function icon(kind, x, y, col) {
+  ctx.save(); ctx.translate(x, y); ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (kind === 'user') {
+    ctx.beginPath(); ctx.arc(-4, -7, 8, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(-4, 16, 14, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(15, -4); ctx.lineTo(15, 8); ctx.moveTo(9, 2); ctx.lineTo(21, 2); ctx.stroke();
+  } else if (kind === 'play') {
+    ctx.beginPath(); ctx.arc(0, 0, 15, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-4, -7); ctx.lineTo(7, 0); ctx.lineTo(-4, 7); ctx.closePath(); ctx.fill();
+  } else if (kind === 'badge') {
+    ctx.beginPath(); ctx.arc(0, -4, 11, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-6, 5); ctx.lineTo(-9, 17); ctx.lineTo(0, 12); ctx.lineTo(9, 17); ctx.lineTo(6, 5); ctx.stroke();
+  } else if (kind === 'check') {
+    ctx.beginPath(); ctx.moveTo(-9, 1); ctx.lineTo(-2, 8); ctx.lineTo(10, -6); ctx.stroke();
+  }
+  ctx.restore();
+}
+function buttons(t) {
+  // ilerleme hattı (butonların arkasında)
+  const lineA = E.outCubic(prog(t, 1.7, 2.1));
+  if (lineA > 0) {
+    const y = BY + BH / 2;
+    ctx.save(); ctx.globalAlpha = lineA;
+    ctx.strokeStyle = 'rgba(37,99,235,.18)'; ctx.lineWidth = 4; ctx.setLineDash([2, 12]); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(BX[0].cx, y); ctx.lineTo(BX[2].cx, y); ctx.stroke(); ctx.setLineDash([]);
+    const f1 = E.inOutCubic(prog(t, CLICK[0] + .08, CLICK[1] - .05)), f2 = E.inOutCubic(prog(t, CLICK[1] + .08, CLICK[2] - .05));
+    ctx.strokeStyle = BLUE; ctx.lineWidth = 6; ctx.shadowColor = hexA(BLUE, .5); ctx.shadowBlur = 14;
+    if (f1 > 0) { ctx.beginPath(); ctx.moveTo(BX[0].cx, y); ctx.lineTo(lerp(BX[0].cx, BX[1].cx, f1), y); ctx.stroke(); }
+    if (f2 > 0) { ctx.beginPath(); ctx.moveTo(BX[1].cx, y); ctx.lineTo(lerp(BX[1].cx, BX[2].cx, f2), y); ctx.stroke(); }
+    ctx.restore();
+  }
+  BTN.forEach(([s, ic], i) => {
+    const t0 = 1.55 + i * .12, b = BX[i];
+    const sp = spring(t - t0, 1.8, 7);
+    if (sp <= 0) return;
+    const T = CLICK[i];
+    const press = 1 - .06 * Math.sin(prog(t, T - .05, T + .15) * Math.PI);
+    const fill = E.outCubic(prog(t, T, T + .35));
+    ctx.save();
+    ctx.translate(b.cx, BY + BH / 2); ctx.scale(sp * press, sp * press); ctx.translate(-b.cx, -(BY + BH / 2));
+    ctx.globalAlpha = clamp(sp * 1.5);
+    ctx.save(); ctx.shadowColor = fill > 0 ? hexA(BLUE, .35 * fill) : 'rgba(11,27,63,.1)'; ctx.shadowBlur = 40; ctx.shadowOffsetY = 14;
+    rrect(b.x, BY, b.w, BH, BH / 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.restore();
+    ctx.lineWidth = 3; ctx.strokeStyle = hexA(BLUE, .45); rrect(b.x, BY, b.w, BH, BH / 2); ctx.stroke();
+    // tıklama noktasından yayılan dolgu
+    if (fill > 0) {
+      ctx.save(); rrect(b.x, BY, b.w, BH, BH / 2); ctx.clip();
+      const g = ctx.createLinearGradient(b.x, BY, b.x + b.w, BY + BH); g.addColorStop(0, BLUE2); g.addColorStop(1, BLUE);
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(b.cx + 20, BY + BH / 2 + 10, b.w * fill, 0, Math.PI * 2); ctx.fill(); ctx.restore();
+    }
+    const tc = fill > .5 ? '#fff' : BLUE;
+    const done = t > T + .25;
+    const icx = b.x + 58;
+    if (done) {
+      const k = E.outBack(prog(t, T + .25, T + .5), 3);
+      ctx.save(); ctx.translate(icx, BY + BH / 2); ctx.scale(k, k); circle(0, 0, 22, 'rgba(255,255,255,.25)'); icon('check', 0, 0, '#fff'); ctx.restore();
+    } else icon(ic, icx, BY + BH / 2, tc);
+    text(s, b.x + 100, BY + BH / 2 + BFS * .36, BFS, 700, tc, 'left', -.01);
+    ctx.restore();
+    // tıklama halkası
+    const rp = prog(t, T, T + .5);
+    if (rp > 0 && rp < 1) { ctx.save(); ctx.globalAlpha = 1 - rp; ctx.strokeStyle = BLUE; ctx.lineWidth = 4 * (1 - rp) + 1; ctx.beginPath(); ctx.arc(b.cx + 20, BY + BH / 2 + 10, 20 + rp * 80, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+  });
+}
+
+// ---- imleç ----
+function cursor(t) {
+  const pts = [[W * .86, H * 1.08, 1.9], [BX[0].cx + 20, BY + BH / 2 + 10, 2.45], [BX[1].cx + 20, BY + BH / 2 + 10, 3.05], [BX[2].cx + 20, BY + BH / 2 + 10, 3.65], [W * .9, H * 1.1, 4.5]];
+  if (t < pts[0][2] || t > pts[4][2]) return;
+  let x = pts[0][0], y = pts[0][1];
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1][2] + (i > 1 ? .12 : 0), b = pts[i][2];
+    if (t >= a) { const e = E.inOutQuint(prog(t, a, b)); x = lerp(pts[i - 1][0], pts[i][0], e); y = lerp(pts[i - 1][1], pts[i][1], e) - Math.sin(e * Math.PI) * 40; }
+  }
+  const pr = CLICK.reduce((m, T) => Math.max(m, Math.sin(prog(t, T - .04, T + .12) * Math.PI)), 0);
+  const s = 2.1 * (1 - pr * .14);
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  ctx.shadowColor = 'rgba(11,27,63,.35)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 4;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 24); ctx.lineTo(6, 18.5); ctx.lineTo(10.5, 28); ctx.lineTo(14.5, 26.2); ctx.lineTo(10.2, 17); ctx.lineTo(17.5, 17); ctx.closePath();
+  ctx.fillStyle = NAVY; ctx.fill(); ctx.shadowColor = 'transparent'; ctx.lineWidth = 1.6; ctx.strokeStyle = '#fff'; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.restore();
+}
+
+// ---- alt satır: seviye yükselten eğitimler ----
+function tagline(t) {
+  const s = 'seviye yükselten eğitimler', size = 46;
+  const tw = measure(s, size, 600, -.01);
+  const iconW = 64, tot = iconW + 22 + tw;
+  const x0 = W / 2 - tot / 2, y = H * .87;
+  const ip = spring(t - 4.1, 1.6, 6);
+  if (ip > 0) {
+    ctx.save(); ctx.translate(x0 + iconW / 2, y - size * .34); ctx.scale(ip, ip);
+    circle(0, 0, iconW / 2, BLUE);
+    // yukarı ok, zıplayarak
+    const hop = Math.sin(prog(t, 4.35, 4.75) * Math.PI) * 8;
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 5; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(0, 12 - hop); ctx.lineTo(0, -12 - hop); ctx.moveTo(-10, -2 - hop); ctx.lineTo(0, -12 - hop); ctx.lineTo(10, -2 - hop); ctx.stroke();
+    ctx.restore();
+  }
+  // harf harf yükselir
+  let x = x0 + iconW + 22;
+  [...s].forEach((ch, i) => {
+    const cw = measure(ch, size, 600, -.01);
+    const p = E.outExpo(prog(t, 4.2 + i * .018, 4.8 + i * .018));
+    if (p > 0) {
+      ctx.save(); ctx.beginPath(); ctx.rect(x - 2, y - size * 1.1, cw + 4, size * 1.45); ctx.clip();
+      text(ch, x, y + (1 - p) * size * 1.2, size, 600, i < 16 ? BLUE : NAVY, 'left', -.01); ctx.restore();
+    }
+    x += cw;
+  });
+}
+
+function drawScene(t) {
+  ctx.save(); ctx.letterSpacing = '0px';
+  background(t);
+  // son yarım saniyede hafif geri çekilme
+  const z = 1 + .015 * E.outCubic(prog(t, 1.2, 6));
+  ctx.translate(W / 2, H / 2); ctx.scale(z, z); ctx.translate(-W / 2, -H / 2);
+  lockup(t); buttons(t); tagline(t); cursor(t);
+  ctx.restore();
+}
+const SAMPLES = RENDER ? 4 : 1;
+function renderAt(t) {
+  t = clamp(t, 0, DUR - 1e-4);
+  if (SAMPLES === 1) { drawScene(t); octx.drawImage(buf, 0, 0); return; }
+  const sh = .5 / FPS;
+  for (let s = 0; s < SAMPLES; s++) { drawScene(clamp(t + (s / (SAMPLES - 1) - .5) * sh, 0, DUR - 1e-4)); octx.globalAlpha = 1 / (s + 1); octx.drawImage(buf, 0, 0); }
+  octx.globalAlpha = 1;
+}
+window.renderAt = renderAt;
+const LAT = 'U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD';
+const EXT = 'U+0100-0130,U+0132-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+1E00-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF';
+const faces = [
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-wght-normal.woff2)', { weight: '100 900', unicodeRange: LAT }),
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-ext-wght-normal.woff2)', { weight: '100 900', unicodeRange: EXT }),
+];
+window.ready = Promise.all([...faces.map(f => f.load()), new Promise(r => { const i = new Image(); i.onload = () => { LOGO = i; r(); }; i.src = 'logo.png'; })])
+  .then(fs => { fs.slice(0, 2).forEach(f => document.fonts.add(f)); return document.fonts.load('800 100px Inter', 'ğşıİü'); })
+  .then(() => {
+    layout(); btnLayout();
+    if (!RENDER) { const t0 = performance.now(); const loop = now => { renderAt(((now - t0) / 1000) % DUR); requestAnimationFrame(loop); }; requestAnimationFrame(loop); }
+    return true;
+  });
+</script>
+</body>
+</html>
