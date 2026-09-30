@@ -1,0 +1,979 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<title>infoakademi — tek plan döngü</title>
+<style>html,body{margin:0;background:#000;height:100%}body{display:grid;place-items:center}canvas{max-width:100vw;max-height:100vh}</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * infoakademi — tek plan, kesmesiz, döngülü hareketli grafik (2048×1080, 60 fps, 36 sn = 66 vuruş @110 BPM)
+ * Her şey yalnızca seek(t) ile çizilir (zamanlayıcı yok, biriken durum yok).
+ * Tüm dönüşümler: 0.8 sn, cubic-bezier(.45,0,.15,1). Önceki içerik yalnızca dönüşümün ikinci yarısında söner.
+ */
+const Q = new URLSearchParams(location.search);
+const W = 2048, H = 1080, cx = W / 2, cy = H / 2, FPS = 60, RENDER = Q.has('render');
+const BPM = 110, BEAT = 60 / BPM, b = n => n * BEAT;
+const DUR = b(66);
+
+const COL = { bg1: '#f3f3f0', bg2: '#e3e3de', ink: '#151515', gray: '#6b6b66', blue: '#2563eb', green: '#22c55e', red: '#ff0033', yt: '#0f0f0f', ytCard: '#272727', ytText: '#f1f1f1', ytSub: '#aaaaaa' };
+
+// ---- zaman çizelgesi (vuruş ızgarası) ----
+const T = {
+  click1: b(1), bar: b(1.5), circ: b(3.5), check: b(5), split: b(6.5),
+  q: b(8), a: b(9.5), contract: b(15), merge: b(16.5), fold: b(18), drop: b(20),
+  pull: b(21), play: b(23), cards: [23, 24.5, 26, 27.5, 29].map(b), grab: b(31), pan: b(32),
+  chart: b(33.5), steps: [34, 35, 36, 37].map(b), clickPt: b(38), dive: b(38) + .08, congrats: b(39.5),
+  stack: [41, 41.5, 42, 42.5, 43].map(b), badge: b(44), career: [45.5, 47, 48.5, 50].map(b), extend: b(51.5),
+  cta: b(52), like: b(53.5), sub: b(55), bell: b(56.5), all: b(57.5), msg: b(58.5),
+  toLine: b(60), toLogo: b(61.5), fold2: b(63), toBtn: b(64.5),
+};
+window.TIMELINE = T;
+
+const out = document.getElementById('c'); out.width = W; out.height = H;
+const octx = out.getContext('2d');
+const mk = (w = W, h = H) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; };
+const buf = mk(), ctx = buf.getContext('2d');
+
+// ---- yardımcılar ----
+const clamp = (x, a = 0, b2 = 1) => Math.min(b2, Math.max(a, x));
+const prog = (t, a, c) => clamp((t - a) / (c - a));
+const lerp = (a, c, p) => a + (c - a) * p;
+function bez(p1x, p1y, p2x, p2y) {
+  const cx_ = 3 * p1x, bx = 3 * (p2x - p1x) - cx_, ax = 1 - cx_ - bx;
+  const cy_ = 3 * p1y, by = 3 * (p2y - p1y) - cy_, ay = 1 - cy_ - by;
+  return x => {
+    if (x <= 0) return 0; if (x >= 1) return 1;
+    let u = x;
+    for (let i = 0; i < 10; i++) { const xt = ((ax * u + bx) * u + cx_) * u - x, dx = (3 * ax * u + 2 * bx) * u + cx_; if (Math.abs(xt) < 1e-6) break; if (Math.abs(dx) < 1e-6) break; u = clamp(u - xt / dx); }
+    let lo = 0, hi = 1; for (let i = 0; i < 20 && Math.abs(((ax * u + bx) * u + cx_) * u - x) > 1e-5; i++) { u = (lo + hi) / 2; (((ax * u + bx) * u + cx_) * u < x) ? lo = u : hi = u; }
+    return ((ay * u + by) * u + cy_) * u;
+  };
+}
+const EZ = bez(.45, 0, .15, 1);
+const MD = .8;                                    // dönüşüm süresi
+const M = (t, a, d = MD) => EZ(prog(t, a, a + d)); // dönüşüm ilerlemesi
+const OUT2 = (t, a, d = MD) => 1 - prog(t, a + d / 2, a + d); // eski içerik: ikinci yarıda söner
+const IN2 = (t, a, d = MD) => prog(t, a + d / 2, a + d);      // yeni içerik: ikinci yarıda belirir
+const smooth = x => x * x * (3 - 2 * x);
+const hash = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+function mixC(a, c, p) {
+  const A = parseInt(a.slice(1), 16), B2 = parseInt(c.slice(1), 16);
+  const r = [16, 8, 0].map(s => Math.round(lerp(A >> s & 255, B2 >> s & 255, clamp(p))));
+  return `rgb(${r[0]},${r[1]},${r[2]})`;
+}
+function hexA(h, a) { const n = parseInt(h.slice(1), 16); return `rgba(${n >> 16},${n >> 8 & 255},${n & 255},${a})`; }
+function font(size, w = 600) { ctx.font = `${w} ${size}px Inter`; }
+function measure(s, size, w = 600, tr = -0.015) { font(size, w); ctx.letterSpacing = `${tr * size}px`; const m = ctx.measureText(s).width; ctx.letterSpacing = '0px'; return m; }
+function text(s, x, y, size, w, col, align = 'left', a = 1, tr = -0.015) {
+  if (a <= 0) return;
+  ctx.save(); font(size, w); ctx.letterSpacing = `${tr * size}px`; ctx.textAlign = align; ctx.textBaseline = 'middle'; ctx.fillStyle = col; ctx.globalAlpha *= a; ctx.fillText(s, x, y); ctx.restore();
+}
+function rr(x, y, w, h, r) { r = Math.max(0, Math.min(r, w / 2, h / 2)); ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function rrc(o) { rr(o.x - o.w / 2, o.y - o.h / 2, o.w, o.h, o.r); }  // merkezli
+function circle(x, y, r, f) { if (r <= 0) return; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fillStyle = f; ctx.fill(); }
+function lerpBox(a, c, p) { const o = {}; for (const k of ['x', 'y', 'w', 'h', 'r']) o[k] = lerp(a[k], c[k], p); return o; }
+// katmanlı yumuşak gölge
+function softShadow(draw, strength = 1) {
+  ctx.save(); ctx.shadowColor = `rgba(20,20,15,${.10 * strength})`; ctx.shadowBlur = 60; ctx.shadowOffsetY = 26; draw(); ctx.restore();
+  ctx.save(); ctx.shadowColor = `rgba(20,20,15,${.08 * strength})`; ctx.shadowBlur = 8; ctx.shadowOffsetY = 2; draw(); ctx.restore();
+}
+function stageBg(a = 1) {
+  ctx.save(); ctx.globalAlpha *= a;
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, COL.bg1); g.addColorStop(1, COL.bg2);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+}
+// doğal yazma: kelime kelime, kelime uzunluğuna göre değişen ritim
+function typed(str, t, t0, speed = 1) {
+  const ws = str.split(' '); let acc = t0, outS = '';
+  for (let i = 0; i < ws.length; i++) {
+    acc += (0.05 + ws[i].length * 0.034 + hash(i + str.length) * 0.05) / speed;
+    if (t < acc) break;
+    outS += (i ? ' ' : '') + ws[i];
+  }
+  return outS;
+}
+function typedEnd(str, t0, speed = 1) { const ws = str.split(' '); let acc = t0; ws.forEach((w, i) => acc += (0.05 + w.length * 0.034 + hash(i + str.length) * 0.05) / speed); return acc; }
+
+// ---- goo katmanı (bulanıklık + alfa eşiği) — yalnızca nokta ayrılma/birleşme ve sohbet→play ----
+const GS = .5, goo1 = mk(W * GS, H * GS), g1 = goo1.getContext('2d'), goo2 = mk(W * GS, H * GS), g2 = goo2.getContext('2d', { willReadFrequently: true });
+function goo(circles, color, alpha = 1) {
+  g1.clearRect(0, 0, goo1.width, goo1.height); g1.fillStyle = '#000';
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const [x, y, r] of circles) { if (r <= 0) continue; g1.beginPath(); g1.arc(x * GS, y * GS, r * GS, 0, Math.PI * 2); g1.fill(); x0 = Math.min(x0, x - r); y0 = Math.min(y0, y - r); x1 = Math.max(x1, x + r); y1 = Math.max(y1, y + r); }
+  const pad = 40, bx = Math.max(0, Math.floor((x0 - pad) * GS)), by = Math.max(0, Math.floor((y0 - pad) * GS));
+  const bw = Math.min(goo1.width - bx, Math.ceil((x1 - x0 + pad * 2) * GS)), bh = Math.min(goo1.height - by, Math.ceil((y1 - y0 + pad * 2) * GS));
+  if (bw <= 0 || bh <= 0) return;
+  g2.clearRect(0, 0, goo2.width, goo2.height); g2.filter = 'blur(7px)'; g2.drawImage(goo1, 0, 0); g2.filter = 'none';
+  const img = g2.getImageData(bx, by, bw, bh), d = img.data;
+  const [R, G, B] = [1, 3, 5].map(i => parseInt(color.slice(i, i + 2), 16));
+  for (let i = 0; i < d.length; i += 4) { const a = d[i + 3] / 255; const k = clamp((a - .42) / .12); d[i] = R; d[i + 1] = G; d[i + 2] = B; d[i + 3] = k * 255 * alpha; }
+  g2.putImageData(img, bx, by);
+  ctx.drawImage(goo2, bx, by, bw, bh, bx / GS, by / GS, bw / GS, bh / GS);
+}
+
+// ---- imleç (gerçek masaüstü işaretçisi) ----
+let CUR = null;
+function drawCursor() {
+  if (!CUR || CUR.a <= 0) return;
+  const { x, y, press = 0, a = 1 } = CUR, s = 1.55 * (1 - press * .1);
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(s, s);
+  ctx.shadowColor = 'rgba(0,0,0,.28)'; ctx.shadowBlur = 6; ctx.shadowOffsetY = 2;
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 22.5); ctx.lineTo(5.3, 17.4); ctx.lineTo(9.1, 25.8); ctx.lineTo(12.6, 24.2); ctx.lineTo(8.9, 16.1); ctx.lineTo(16, 16); ctx.closePath();
+  ctx.fillStyle = '#000'; ctx.fill(); ctx.shadowColor = 'transparent'; ctx.lineWidth = 1.5; ctx.strokeStyle = '#fff'; ctx.lineJoin = 'round'; ctx.stroke();
+  ctx.restore();
+}
+const pressAt = (t, T0) => Math.sin(prog(t, T0 - .06, T0 + .12) * Math.PI);
+// imleç anahtar kareleri (ekran koordinatı): [zaman, x, y]
+function keyPath(t, keys) {
+  if (t <= keys[0][0]) return [keys[0][1], keys[0][2]];
+  for (let i = 1; i < keys.length; i++) {
+    const [ta, xa, ya] = keys[i - 1], [tb, xb, yb] = keys[i];
+    if (t <= tb) { const e = EZ(prog(t, ta, tb)); return [lerp(xa, xb, e), lerp(ya, yb, e) - Math.sin(e * Math.PI) * Math.min(40, Math.hypot(xb - xa, yb - ya) * .06)]; }
+  }
+  const k = keys[keys.length - 1]; return [k[1], k[2]];
+}
+
+// ===================================================================================
+// SAHNE 01 — başla butonu → yükleme çubuğu → dairesel ilerleme → onay → 3 nokta
+// ===================================================================================
+const BTN = { x: cx, y: cy - 20, w: 560, h: 108, r: 54 };
+const HELP_Y = cy + 88;
+function startButton(box, labelA, helpA, fill = COL.ink) {
+  softShadow(() => { rrc(box); ctx.fillStyle = fill; ctx.fill(); }, 1);
+  text('Online Eğitime Başla', box.x, box.y + 2, 38, 600, '#fff', 'center', labelA);
+  text('Kariyerine yeni bir beceri ekle.', cx, HELP_Y, 28, 500, COL.gray, 'center', helpA);
+}
+function scene01(t) {
+  stageBg();
+  const BAR = { x: cx, y: cy - 20, w: 1120, h: 66, r: 33 }, CIR = { x: cx, y: cy - 20, w: 150, h: 150, r: 75 };
+  if (t < T.bar) {
+    const s = 1 - .045 * pressAt(t, T.click1);
+    startButton({ ...BTN, w: BTN.w * s, h: BTN.h * s }, 1, 1);
+    CUR = { ...xy(keyPath(t, [[0, 2200, 1180], [T.click1 - .05, BTN.x + 40, BTN.y + 12]])), press: pressAt(t, T.click1) };
+    return;
+  }
+  // imleç tıklamadan sonra yavaşça çekilir
+  if (t < T.bar + 1.2) CUR = { ...xy(keyPath(t, [[T.bar, BTN.x + 40, BTN.y + 12], [T.bar + 1.2, 1700, 1180]])) };
+  let box, fillFrac, trackCol;
+  if (t < T.circ) {
+    const e = M(t, T.bar);
+    box = lerpBox(BTN, BAR, e);
+    trackCol = mixC(COL.ink, '#dcdcd6', e);
+    fillFrac = lerp(1, .06, e) + .66 * smooth(prog(t, T.bar + .6, T.circ));
+    softShadow(() => { rrc(box); ctx.fillStyle = trackCol; ctx.fill(); }, 1 - e * .6);
+    // dolu kısım (siyah)
+    ctx.save(); rrc(box); ctx.clip(); ctx.fillStyle = COL.ink; ctx.fillRect(box.x - box.w / 2, box.y - box.h / 2, box.w * fillFrac, box.h); ctx.restore();
+    text('Online Eğitime Başla', box.x, box.y + 2, 38, 600, '#fff', 'center', OUT2(t, T.bar));
+    text('Kariyerine yeni bir beceri ekle.', cx, HELP_Y, 28, 500, COL.gray, 'center', OUT2(t, T.bar));
+    const la = IN2(t, T.bar);
+    if (la > 0) {
+      const s = 'Öğrenme alanın hazırlanıyor...';
+      ctx.save(); rrc(box); ctx.clip();
+      text(s, box.x, box.y + 1, 26, 600, COL.ink, 'center', la);
+      ctx.beginPath(); ctx.rect(box.x - box.w / 2, box.y - box.h / 2, box.w * fillFrac, box.h); ctx.clip();
+      text(s, box.x, box.y + 1, 26, 600, '#fff', 'center', la);
+      ctx.restore();
+    }
+    return;
+  }
+  const RING = 12;
+  if (t < T.check) {
+    const e = M(t, T.circ);
+    box = lerpBox(BAR, CIR, e);
+    const barFill = .72;
+    softShadow(() => { rrc(box); ctx.fillStyle = '#dcdcd6'; ctx.fill(); }, .4 + .6 * e);
+    // çubuktaki dolgu ilk yarıda daireye çekilir, sonra halka devralır
+    ctx.save(); rrc(box); ctx.clip(); ctx.globalAlpha = OUT2(t, T.circ); ctx.fillStyle = COL.ink; ctx.fillRect(box.x - box.w / 2, box.y - box.h / 2, box.w * barFill, box.h); ctx.restore();
+    ctx.save(); rrc(box); ctx.clip(); text('Öğrenme alanın hazırlanıyor...', box.x, box.y + 1, 26, 600, COL.ink, 'center', OUT2(t, T.circ)); ctx.restore();
+    const ra = IN2(t, T.circ);
+    const pr = lerp(barFill, 1, smooth(prog(t, T.circ + .5, T.check - .05)));
+    if (ra > 0) {
+      ctx.save(); ctx.globalAlpha = ra; ctx.lineWidth = RING; ctx.lineCap = 'round';
+      ctx.strokeStyle = COL.ink; ctx.beginPath(); ctx.arc(box.x, box.y, 75 - RING / 2 - 4, -Math.PI / 2, -Math.PI / 2 + pr * Math.PI * 2); ctx.stroke(); ctx.restore();
+      text(`%${Math.round(pr * 100 / 5) * 5}`, box.x, box.y + 2, 30, 700, COL.ink, 'center', ra);
+    }
+    return;
+  }
+  if (t < T.split) {
+    const e = M(t, T.check);
+    softShadow(() => { rrc(CIR); ctx.fillStyle = '#dcdcd6'; ctx.fill(); }, 1);
+    ctx.save(); ctx.globalAlpha = OUT2(t, T.check); ctx.lineWidth = RING; ctx.strokeStyle = COL.ink; ctx.beginPath(); ctx.arc(cx, CIR.y, 75 - RING / 2 - 4, 0, Math.PI * 2); ctx.stroke(); ctx.restore();
+    text('%100', cx, CIR.y + 2, 30, 700, COL.ink, 'center', OUT2(t, T.check));
+    circle(cx, CIR.y, 75 * e, COL.blue);
+    checkMark(cx, CIR.y, 1, prog(t, T.check + .3, T.check + .8));
+    text('Hazırsın.', cx, CIR.y + 150 + (1 - IN2(t, T.check)) * 14, 46, 700, COL.ink, 'center', IN2(t, T.check), -.02);
+    return;
+  }
+  // üç noktaya ayrılma (goo)
+  const e = M(t, T.split);
+  const R = lerp(75, 26, e), off = 120 * e, rs = lerp(44, 26, e) * clamp(e * 4);
+  goo([[cx, CIR.y, R], [cx - off, CIR.y, rs], [cx + off, CIR.y, rs]], COL.blue);
+  ctx.save(); ctx.beginPath(); ctx.arc(cx, CIR.y, R, 0, Math.PI * 2); ctx.clip(); checkMark(cx, CIR.y, 1, 1, OUT2(t, T.split)); ctx.restore();
+  text('Hazırsın.', cx, CIR.y + 150, 46, 700, COL.ink, 'center', OUT2(t, T.split), -.02);
+}
+const xy = ([x, y]) => ({ x, y });
+function checkMark(x, y, s, p, a = 1) {
+  if (p <= 0 || a <= 0) return;
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(s, s);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 11; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const A = [-30, 2], Bp = [-8, 24], Cp = [32, -20];
+  ctx.beginPath(); ctx.moveTo(...A);
+  if (p < .4) ctx.lineTo(lerp(A[0], Bp[0], p / .4), lerp(A[1], Bp[1], p / .4));
+  else { ctx.lineTo(...Bp); const q = (p - .4) / .6; ctx.lineTo(lerp(Bp[0], Cp[0], q), lerp(Bp[1], Cp[1], q)); }
+  ctx.stroke(); ctx.restore();
+}
+
+// ===================================================================================
+// SAHNE 02 — sohbet: soru / cevap, sonra noktalar birleşir → play
+// ===================================================================================
+const DOT_Y = cy - 20, DOT_R = 26;
+const QS = 'Online eğitimle gerçekten öğrenebilir miyim?', AS = 'Canlı dersler, uygulamalı eğitim ve uzman eğitmenlerle evet.', SUP = 'Üstelik istediğin yerden katılabilirsin.';
+let QB, AB;
+function chatLayout() {
+  const qw = measure(QS, 42, 600) + 96, aw = measure(AS, 40, 500) + 96;
+  QB = { x: 330 + qw / 2, y: 250, w: qw, h: 120, r: 38 };
+  AB = { x: W - 330 - aw / 2, y: 780, w: aw, h: 120, r: 38 };
+}
+function bubble(box, fill, strength) { softShadow(() => { rrc(box); ctx.fillStyle = fill; ctx.fill(); }, strength); }
+function scene02(t) {
+  stageBg();
+  const dotBox = (x) => ({ x, y: DOT_Y, w: DOT_R * 2, h: DOT_R * 2, r: DOT_R });
+  const L = dotBox(cx - 120), Rr = dotBox(cx + 120);
+  // orta nokta
+  const mergeE = M(t, T.merge);
+  if (t < T.merge) circle(cx, DOT_Y, DOT_R, COL.blue);
+  // soru balonu
+  let qBox, qCol, aBox, aCol;
+  const qe = M(t, T.q), ae = M(t, T.a), ce = M(t, T.contract);
+  const flight = (from, to, e, arc) => { const b2 = lerpBox(from, to, e); b2.y += arc * Math.sin(e * Math.PI); return b2; };
+  if (t < T.contract) {
+    // uçuş: önce konum, sonra genişleme (tek eğri üzerinde)
+    qBox = flight(L, QB, qe, -60); qBox.w = lerp(L.w, QB.w, smooth(qe)); qCol = mixC(COL.blue, '#ffffff', qe);
+    aBox = flight(Rr, AB, ae, 60); aBox.w = lerp(Rr.w, AB.w, smooth(ae)); aCol = mixC(COL.blue, COL.ink, ae);
+  } else {
+    qBox = lerpBox(QB, L, ce); qCol = mixC('#ffffff', COL.blue, ce);
+    aBox = lerpBox(AB, Rr, ce); aCol = mixC(COL.ink, COL.blue, ce);
+  }
+  if (t < T.merge) {
+    bubble(qBox, qCol, qe * (1 - ce));
+    bubble(aBox, aCol, ae * (1 - ce));
+  }
+  // yazılar
+  const qa = IN2(t, T.q) * (t < T.contract ? 1 : OUT2(t, T.contract));
+  const qs = typed(QS, t, T.q + .55, 1.15);
+  if (qa > 0) {
+    ctx.save(); rrc(qBox); ctx.clip();
+    text(qs, qBox.x - qBox.w / 2 + 48, qBox.y + 2, 42, 600, COL.ink, 'left', qa);
+    if (qs.length < QS.length && Math.floor(t * 4) % 2 === 0) { ctx.fillStyle = COL.blue; ctx.globalAlpha = qa; ctx.fillRect(qBox.x - qBox.w / 2 + 52 + measure(qs, 42, 600), qBox.y - 24, 3, 48); }
+    ctx.restore();
+    text('Sen', qBox.x - qBox.w / 2 + 20, qBox.y - 92, 24, 600, COL.gray, 'left', qa);
+  }
+  const aa = IN2(t, T.a) * (t < T.contract ? 1 : OUT2(t, T.contract));
+  const as = typed(AS, t, T.a + .6, 1.35);
+  if (aa > 0) {
+    ctx.save(); rrc(aBox); ctx.clip();
+    text(as, aBox.x - aBox.w / 2 + 48, aBox.y + 2, 40, 500, '#fff', 'left', aa);
+    ctx.restore();
+    text('infoakademi', aBox.x + aBox.w / 2 - 20, aBox.y - 92, 24, 700, COL.blue, 'right', aa);
+    const sa = prog(t, typedEnd(AS, T.a + .6, 1.35), typedEnd(AS, T.a + .6, 1.35) + .4) * (t < T.contract ? 1 : OUT2(t, T.contract));
+    text(SUP, aBox.x + aBox.w / 2 - 20, aBox.y + 110 + (1 - sa) * 12, 30, 500, COL.gray, 'right', sa);
+  }
+  // birleşme (goo)
+  if (t >= T.merge) {
+    const off = 120 * (1 - mergeE);
+    const Rm = lerp(DOT_R, 40, mergeE);
+    const rs = DOT_R * (1 - smooth(prog(t, T.merge + .5, T.merge + .8)));
+    goo([[cx, DOT_Y, Rm], [cx - off, DOT_Y, rs], [cx + off, DOT_Y, rs]], COL.blue);
+  }
+}
+
+// ===================================================================================
+// SAHNE 03 — nokta → play üçgeni, DROP'ta tıklama, koyu taşma, YouTube oynatıcıya geri çekilme
+// ===================================================================================
+function playShape(x, y, rad, e, col) {
+  // noktadan üçgene: çevre noktaları tek tek katlanır
+  const N = 90, pts = [];
+  const tri = [[1, 0], [-.55, .9], [-.55, -.9]];
+  for (let i = 0; i < N; i++) {
+    const u = i / N, a = u * Math.PI * 2;
+    const c = [Math.cos(a), Math.sin(a)];
+    // üçgen çevresinde aynı parametre
+    const seg = Math.floor(u * 3), f = u * 3 - seg, p0 = tri[seg], p1 = tri[(seg + 1) % 3];
+    const tr = [lerp(p0[0], p1[0], f), lerp(p0[1], p1[1], f)];
+    const k = EZ(clamp(e * 1.4 - hash(i) * .4));      // noktalar sırayla katlanır
+    pts.push([x + lerp(c[0], tr[0], k) * rad, y + lerp(c[1], tr[1], k) * rad]);
+  }
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.closePath();
+  ctx.fillStyle = col; ctx.lineJoin = 'round'; ctx.fill(); ctx.lineWidth = rad * .12; ctx.strokeStyle = col; ctx.stroke();
+}
+
+// ---- YouTube dünyası (dünya koordinatı; sayfa 2048×1080) ----
+const PL = { x: 96, y: 96, w: 1344, h: 756 };          // oynatıcı
+const PC = [PL.x + PL.w / 2, PL.y + PL.h / 2];
+const PB = { x0: PL.x + 28, x1: PL.x + PL.w - 28, y: PL.y + PL.h - 64 };  // ilerleme çubuğu
+const AX = 2700;                                        // analitik alanı x ofseti
+const CL = AX + 384, BASE = PB.y, CH_H = 470;
+const WK = [140, 420, 700, 980].map(v => CL + v);
+const VAL = { pct: [42, 68, 86, 100], les: [3, 8, 17, 24], prj: [1, 4, 9, 15], hrs: ['4 saat', '12 saat', '28 saat', '42 saat'] };
+const WY = VAL.pct.map(v => BASE - v / 100 * CH_H);
+const PLAY_R = 40;
+let CAM = { x: cx, y: cy, z: 1 };
+const toScr = (wx, wy) => [(wx - CAM.x) * CAM.z + cx, (wy - CAM.y) * CAM.z + cy];
+function camera(t) {
+  let x = PC[0], y = PC[1], z = 70 / PLAY_R;
+  const pe = M(t, T.pull);
+  z = Math.exp(lerp(Math.log(70 / PLAY_R), 0, pe)); x = lerp(PC[0], cx, pe); y = lerp(PC[1], cy, pe);
+  const panE = M(t, T.pan);
+  x = lerp(x, AX + cx, panE);
+  if (t > T.dive) {
+    const de = M(t, T.dive);
+    x = lerp(x, WK[3], de); y = lerp(y, WY[3], de);
+    z = Math.exp(lerp(0, Math.log(90), de));
+  }
+  CAM = { x, y, z };
+}
+function withCam(fn) { ctx.save(); ctx.translate(cx, cy); ctx.scale(CAM.z, CAM.z); ctx.translate(-CAM.x, -CAM.y); fn(); ctx.restore(); }
+
+// oynatıcı ilerlemesi (0–1)
+function playProgress(t) { return lerp(.015, .34, smooth(prog(t, T.play, T.grab))); }
+function tipX(t) {
+  const x0 = lerp(PB.x0, PB.x1, playProgress(t));
+  if (t < T.grab) return x0;
+  return lerp(x0, WK[3], EZ(prog(t, T.grab, T.pan + MD)));
+}
+function ytIcon(kind, x, y, s, col) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 2.2; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  if (kind === 'play') { ctx.beginPath(); ctx.moveTo(-6, -9); ctx.lineTo(10, 0); ctx.lineTo(-6, 9); ctx.closePath(); ctx.fill(); }
+  if (kind === 'pause') { ctx.fillRect(-7, -9, 5, 18); ctx.fillRect(3, -9, 5, 18); }
+  if (kind === 'next') { ctx.beginPath(); ctx.moveTo(-8, -8); ctx.lineTo(4, 0); ctx.lineTo(-8, 8); ctx.closePath(); ctx.fill(); ctx.fillRect(6, -8, 3, 16); }
+  if (kind === 'gear') { ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.stroke(); for (let i = 0; i < 8; i++) { const a = i * Math.PI / 4; ctx.beginPath(); ctx.moveTo(Math.cos(a) * 8, Math.sin(a) * 8); ctx.lineTo(Math.cos(a) * 11, Math.sin(a) * 11); ctx.stroke(); } }
+  if (kind === 'full') { for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) { ctx.beginPath(); ctx.moveTo(sx * 9, sy * 3); ctx.lineTo(sx * 9, sy * 9); ctx.lineTo(sx * 3, sy * 9); ctx.stroke(); } }
+  if (kind === 'cc') { rr(-11, -8, 22, 16, 3); ctx.stroke(); ctx.font = '700 8px Inter'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('AY', 0, .5); }
+  if (kind === 'like') { ctx.beginPath(); ctx.moveTo(-9, -1); ctx.lineTo(-9, 9); ctx.lineTo(-4, 9); ctx.lineTo(-4, -1); ctx.closePath(); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-4, -1); ctx.lineTo(0, -9); ctx.quadraticCurveTo(3, -10, 3, -6); ctx.lineTo(2, -2); ctx.lineTo(8, -2); ctx.quadraticCurveTo(10, -1, 9, 2); ctx.lineTo(7, 8); ctx.quadraticCurveTo(6, 9, 4, 9); ctx.lineTo(-4, 9); ctx.stroke(); }
+  if (kind === 'share') { ctx.beginPath(); ctx.moveTo(9, -1); ctx.lineTo(1, -8); ctx.lineTo(1, -4); ctx.quadraticCurveTo(-9, -3, -9, 8); ctx.quadraticCurveTo(-5, 1, 1, 2); ctx.lineTo(1, 6); ctx.closePath(); ctx.stroke(); }
+  if (kind === 'save') { ctx.beginPath(); ctx.moveTo(-6, -9); ctx.lineTo(6, -9); ctx.lineTo(6, 9); ctx.lineTo(0, 4); ctx.lineTo(-6, 9); ctx.closePath(); ctx.stroke(); }
+  if (kind === 'bell') { ctx.beginPath(); ctx.moveTo(-8, 6); ctx.quadraticCurveTo(-7, 3, -7, -1); ctx.quadraticCurveTo(-7, -9, 0, -9); ctx.quadraticCurveTo(7, -9, 7, -1); ctx.quadraticCurveTo(7, 3, 8, 6); ctx.closePath(); ctx.stroke(); ctx.beginPath(); ctx.arc(0, 8, 2.5, 0, Math.PI); ctx.stroke(); }
+  if (kind === 'search') { ctx.beginPath(); ctx.arc(-2, -2, 7, 0, Math.PI * 2); ctx.stroke(); ctx.beginPath(); ctx.moveTo(3, 3); ctx.lineTo(9, 9); ctx.stroke(); }
+  if (kind === 'menu') { for (const yy of [-6, 0, 6]) { ctx.beginPath(); ctx.moveTo(-9, yy); ctx.lineTo(9, yy); ctx.stroke(); } }
+  ctx.restore();
+}
+let LOGO;
+function avatar(x, y, r) {
+  ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();
+  ctx.fillStyle = '#fff'; ctx.fillRect(x - r, y - r, r * 2, r * 2); ctx.drawImage(LOGO, x - r, y - r, r * 2, r * 2); ctx.restore();
+}
+
+// ---- video içeriği (oynatıcı koordinatı 1344×756) ----
+const HERO = [
+  { x: 380, y: 88, w: 520, h: 560 },   // thumbnail/monitor → Photoshop tuvali
+  { x: 40, y: 56, w: 900, h: 560 },    // canlı ders ana karo
+  { x: 322, y: 72, w: 700, h: 560 },   // vektör çalışma yüzeyi
+  { x: 150, y: 170, w: 330, h: 330 },  // proje: ilk gönderi
+  { x: 262, y: 58, w: 820, h: 600 },   // portfolyo sayfası
+];
+const CARDS = ['Uygulamalı Eğitim', 'Canlı Online Ders', 'Uzman Eğitmen', 'Gerçek Projeler', 'Portfolyo Oluştur'];
+function thumbnail(t) {
+  // modern eğitmen / tasarımcı çalışma alanı (illüstrasyon)
+  const g = ctx.createLinearGradient(0, 0, 0, PL.h); g.addColorStop(0, '#e9e5dc'); g.addColorStop(1, '#d9d3c7'); ctx.fillStyle = g; ctx.fillRect(0, 0, PL.w, PL.h);
+  ctx.fillStyle = '#cfc7b8'; ctx.fillRect(0, 560, PL.w, 196);                         // masa
+  ctx.fillStyle = '#b9ae9b'; ctx.fillRect(0, 556, PL.w, 8);
+  // raf + bitki
+  ctx.fillStyle = '#d6cfc2'; ctx.fillRect(1030, 150, 240, 12);
+  for (let i = 0; i < 4; i++) { ctx.fillStyle = ['#2563eb', '#151515', '#8a8a82', '#c9c2b4'][i]; ctx.fillRect(1050 + i * 34, 70, 26, 80); }
+  ctx.fillStyle = '#6f8f6a'; for (let i = 0; i < 7; i++) { ctx.save(); ctx.translate(1180, 470); ctx.rotate(-1.2 + i * .4); ctx.beginPath(); ctx.ellipse(0, -60, 18, 60, 0, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }
+  ctx.fillStyle = '#8c8272'; rr(1140, 470, 80, 90, 10); ctx.fill();
+  // lamba
+  ctx.strokeStyle = '#151515'; ctx.lineWidth = 8; ctx.beginPath(); ctx.moveTo(180, 556); ctx.lineTo(220, 380); ctx.lineTo(320, 330); ctx.stroke();
+  ctx.fillStyle = '#151515'; ctx.beginPath(); ctx.moveTo(300, 300); ctx.lineTo(380, 340); ctx.lineTo(330, 380); ctx.closePath(); ctx.fill();
+  // monitör (hero)
+  const m = HERO[0];
+  ctx.fillStyle = '#151515'; rr(m.x - 18, m.y - 18, m.w + 36, m.h + 36, 18); ctx.fill();
+  ctx.fillStyle = '#151515'; ctx.fillRect(m.x + m.w / 2 - 30, m.y + m.h + 18, 60, 60);
+  photoshop(t, .0);
+  // tablet + kalem
+  ctx.fillStyle = '#2b2b2b'; rr(980, 600, 240, 110, 14); ctx.fill();
+  ctx.strokeStyle = '#ddd'; ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(1080, 700); ctx.lineTo(1170, 620); ctx.stroke();
+}
+function photoshop(t, full) {
+  // full=0: monitör içinde (hero kutusuna sığar), full=1: tüm oynatıcı
+  const m = HERO[0];
+  ctx.save(); ctx.beginPath(); ctx.rect(m.x, m.y, m.w, m.h); ctx.clip();
+  ctx.translate(m.x, m.y); const s = m.w / PL.w; ctx.scale(s, m.h / PL.h);
+  psUI(t);
+  ctx.restore();
+}
+function psUI(t) {
+  ctx.fillStyle = '#1e1e1e'; ctx.fillRect(0, 0, PL.w, PL.h);
+  ctx.fillStyle = '#2b2b2b'; ctx.fillRect(0, 0, PL.w, 40);
+  ['Dosya', 'Düzen', 'Görüntü', 'Katman', 'Tür', 'Seç', 'Filtre'].forEach((s, i) => text(s, 24 + i * 110, 20, 18, 500, '#cfcfcf'));
+  ctx.fillStyle = '#262626'; ctx.fillRect(0, 40, 64, PL.h - 40);
+  for (let i = 0; i < 9; i++) { ctx.fillStyle = i === 3 ? COL.blue : '#4a4a4a'; rr(16, 64 + i * 56, 32, 32, 6); ctx.fill(); }
+  ctx.fillStyle = '#262626'; ctx.fillRect(PL.w - 280, 40, 280, PL.h - 40);
+  text('Katmanlar', PL.w - 256, 72, 20, 600, '#eee');
+  ['Başlık', 'Daire', 'Fotoğraf', 'Arka Plan'].forEach((s, i) => {
+    const y = 100 + i * 64, on = i === Math.floor(t * 1.5) % 4;
+    ctx.fillStyle = on ? '#35507f' : '#2f2f2f'; ctx.fillRect(PL.w - 268, y, 256, 54);
+    ctx.fillStyle = ['#fff', '#ff8a3d', '#8fb3ff', COL.blue][i]; ctx.fillRect(PL.w - 256, y + 9, 36, 36);
+    text(s, PL.w - 204, y + 27, 19, 500, '#ddd');
+  });
+  // tuval (poster)
+  const px = 380, py = 110, pw = 520, ph = 560;
+  ctx.fillStyle = COL.blue; ctx.fillRect(px, py, pw, ph);
+  circle(px + 380, py + 170, 110, '#ff8a3d');
+  text('TASARIM', px + 40, py + 420, 104, 900, '#fff', 'left', 1, -.04);
+  text('uygula · öğren', px + 44, py + 500, 30, 500, '#dce6ff');
+  // fırça darbesi
+  const bp = clamp((t % 3) / 1.6);
+  ctx.strokeStyle = '#ffd24d'; ctx.lineWidth = 16; ctx.lineCap = 'round'; ctx.beginPath();
+  for (let i = 0; i <= 40 * bp; i++) { const u = i / 40, x = px + 60 + u * 400, y = py + 250 + Math.sin(u * 7) * 26; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+  ctx.stroke();
+}
+function liveClass(t) {
+  ctx.fillStyle = '#121418'; ctx.fillRect(0, 0, PL.w, PL.h);
+  const m = HERO[1];
+  ctx.fillStyle = '#262a31'; rr(m.x, m.y, m.w, m.h, 18); ctx.fill();
+  // eğitmen silüeti + çizim
+  circle(m.x + 300, m.y + 230, 70, '#c9a98f'); ctx.fillStyle = '#3b4250'; ctx.beginPath(); ctx.ellipse(m.x + 300, m.y + 470, 170, 150, 0, Math.PI, 0); ctx.fill();
+  ctx.fillStyle = '#f5f5f2'; rr(m.x + 520, m.y + 120, 320, 240, 10); ctx.fill();
+  ctx.strokeStyle = COL.blue; ctx.lineWidth = 6; ctx.beginPath(); ctx.arc(m.x + 640, m.y + 240, 60, 0, Math.PI * 2 * clamp((t % 2.4) / 1.2)); ctx.stroke();
+  ctx.fillStyle = COL.red; rr(m.x + 24, m.y + 22, 118, 38, 8); ctx.fill(); circle(m.x + 44, m.y + 41, 6, '#fff'); text('CANLI', m.x + 58, m.y + 42, 20, 800, '#fff');
+  text('Eğitmen', m.x + 30, m.y + m.h - 34, 22, 600, '#fff');
+  const ini = ['AK', 'MY', 'ZT', 'EB'], cols = ['#3b82f6', '#16a34a', '#d97706', '#9333ea'];
+  ini.forEach((s, i) => { const y = 56 + i * 142; ctx.fillStyle = '#262a31'; rr(970, y, 330, 128, 14); ctx.fill(); circle(1135, y + 64, 36, cols[i]); text(s, 1135, y + 65, 24, 700, '#fff', 'center'); });
+  ctx.fillStyle = 'rgba(255,255,255,.95)'; rr(m.x + m.w - 400, m.y + m.h - 74, 370, 50, 25); ctx.fill(); text('Harika, çok net anlattınız!', m.x + m.w - 376, m.y + m.h - 48, 22, 500, COL.ink);
+}
+function vector(t) {
+  ctx.fillStyle = '#2b2b2b'; ctx.fillRect(0, 0, PL.w, PL.h);
+  const m = HERO[2];
+  ctx.fillStyle = '#fff'; ctx.fillRect(m.x, m.y, m.w, m.h);
+  text('Kalem Aracı', 40, 44, 20, 600, '#ddd');
+  const P = [[m.x + 350, m.y + 90], [m.x + 580, m.y + 280], [m.x + 350, m.y + 480], [m.x + 120, m.y + 280]];
+  const Hs = [[140, 0], [0, 150], [-140, 0], [0, -150]];
+  const dp = clamp(((t - T.cards[2]) % 3) / 1.6 + .2);
+  ctx.save(); ctx.beginPath(); ctx.moveTo(...P[0]);
+  for (let i = 0; i < 4; i++) { const a = P[i], c = P[(i + 1) % 4], ha = Hs[i], hc = Hs[(i + 1) % 4]; ctx.bezierCurveTo(a[0] + ha[0], a[1] + ha[1], c[0] - hc[0], c[1] - hc[1], c[0], c[1]); }
+  ctx.fillStyle = hexA(COL.blue, .9 * dp); ctx.fill(); ctx.lineWidth = 4; ctx.strokeStyle = COL.blue; ctx.stroke(); ctx.restore();
+  P.forEach((p, i) => { const h = Hs[i]; ctx.strokeStyle = '#7a7a7a'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(p[0] - h[0], p[1] - h[1]); ctx.lineTo(p[0] + h[0], p[1] + h[1]); ctx.stroke(); circle(p[0] - h[0], p[1] - h[1], 7, '#7a7a7a'); circle(p[0] + h[0], p[1] + h[1], 7, '#7a7a7a'); ctx.fillStyle = '#fff'; ctx.fillRect(p[0] - 9, p[1] - 9, 18, 18); ctx.strokeStyle = COL.blue; ctx.strokeRect(p[0] - 9, p[1] - 9, 18, 18); });
+  text('i', m.x + 350, m.y + 290, 150, 900, '#fff', 'center', dp);
+}
+function projects(t) {
+  ctx.fillStyle = '#ece9e2'; ctx.fillRect(0, 0, PL.w, PL.h);
+  const posts = [[COL.blue, 'YENİ DÖNEM', '#fff'], [COL.ink, 'infoakademi', '#fff'], ['#ff8a3d', 'KAYIT AÇIK', COL.ink]];
+  posts.forEach(([c, s, tc], i) => {
+    const x = 150 + i * 360, y = 170;
+    softShadow(() => { ctx.fillStyle = c; rr(x, y, 330, 330, 16); ctx.fill(); }, .8);
+    text(s, x + 165, y + 165, i === 1 ? 44 : 48, 800, tc, 'center', 1, -.03);
+  });
+  text('Sosyal medya · Logo · Afiş', 150, 580, 28, 600, COL.ink);
+}
+function portfolio(t) {
+  ctx.fillStyle = '#dcdad3'; ctx.fillRect(0, 0, PL.w, PL.h);
+  const m = HERO[4];
+  softShadow(() => { ctx.fillStyle = '#f7f7f4'; ctx.fillRect(m.x, m.y, m.w, m.h); }, .8);
+  text('Portfolyo', m.x + 60, m.y + 110, 96, 800, COL.ink, 'left', 1, -.04);
+  text('Tipografi · Renk · Kompozisyon', m.x + 64, m.y + 190, 26, 500, COL.gray);
+  [COL.blue, '#ff8a3d', COL.ink].forEach((c, i) => { ctx.fillStyle = c; ctx.fillRect(m.x + 60 + i * 240, m.y + 250, 220, 160); });
+  ['#2563eb', '#22c55e', '#ff8a3d', '#151515', '#e3e3de'].forEach((c, i) => { circle(m.x + 90 + i * 90, m.y + 490, 32, c); text(c.toUpperCase(), m.x + 90 + i * 90, m.y + 546, 14, 600, COL.gray, 'center'); });
+}
+const VIDS = [(t) => psUI(t), liveClass, vector, projects, portfolio];
+function mapRect(a, c) { // a kutusunu c kutusuna taşıyan dönüşüm
+  ctx.translate(c.x, c.y); ctx.scale(c.w / a.w, c.h / a.h); ctx.translate(-a.x, -a.y);
+}
+function videoContent(t) {
+  if (t < T.play) { thumbnail(t); return; }
+  // thumbnail → Photoshop (monitöre dalış)
+  if (t < T.cards[1]) {
+    const e = M(t, T.play);
+    const full = { x: 0, y: 0, w: PL.w, h: PL.h };
+    const mon = lerpBox({ ...HERO[0], r: 0 }, { ...full, r: 0 }, e);
+    ctx.save(); ctx.globalAlpha = OUT2(t, T.play); mapRect(HERO[0], mon); thumbnail(t); ctx.restore();
+    // monitördeki arayüz tam ekrana büyür
+    ctx.save(); ctx.beginPath(); ctx.rect(mon.x, mon.y, mon.w, mon.h); ctx.clip(); ctx.translate(mon.x, mon.y); ctx.scale(mon.w / PL.w, mon.h / PL.h); psUI(t); ctx.restore();
+    return;
+  }
+  let k = 1; while (k < 4 && t >= T.cards[k + 1]) k++;
+  const e = M(t, T.cards[k]);
+  if (e >= 1) { VIDS[k](t); return; }
+  const mid = lerpBox({ ...HERO[k - 1], r: 0 }, { ...HERO[k], r: 0 }, e);
+  ctx.save(); ctx.globalAlpha = OUT2(t, T.cards[k]); mapRect(HERO[k - 1], mid); VIDS[k - 1](t); ctx.restore();
+  ctx.save(); ctx.globalAlpha = IN2(t, T.cards[k]); mapRect(HERO[k], mid); VIDS[k](t); ctx.restore();
+}
+function chip(t) {
+  if (t < T.play + .4) return;
+  let k = 0; while (k < 4 && t >= T.cards[k + 1]) k++;
+  const e = k === 0 ? 1 : M(t, T.cards[k]);
+  const wOf = i => measure(CARDS[i], 30, 600) + 84;
+  const w = k === 0 ? wOf(0) : lerp(wOf(k - 1), wOf(k), e);
+  const a0 = IN2(t, T.play);
+  const x = 36, y = PL.h - 168;
+  ctx.save(); ctx.globalAlpha = a0;
+  softShadow(() => { ctx.fillStyle = '#fff'; rr(x, y, w, 64, 32); ctx.fill(); }, .7);
+  circle(x + 34, y + 32, 8, COL.blue);
+  if (k > 0 && e < 1) { text(CARDS[k - 1], x + 58, y + 33, 30, 600, COL.ink, 'left', OUT2(t, T.cards[k])); text(CARDS[k], x + 58, y + 33, 30, 600, COL.ink, 'left', IN2(t, T.cards[k])); }
+  else text(CARDS[k], x + 58, y + 33, 30, 600, COL.ink);
+  ctx.restore();
+}
+function controls(t, ft) {
+  const g = ctx.createLinearGradient(0, PL.h - 170, 0, PL.h); g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.72)');
+  ctx.fillStyle = g; ctx.fillRect(0, PL.h - 170, PL.w, 170);
+  const y = PL.h - 64, x0 = 28, x1 = PL.w - 28;
+  ctx.fillStyle = 'rgba(255,255,255,.28)'; ctx.fillRect(x0, y - 2.5, x1 - x0, 5);
+  ctx.fillStyle = 'rgba(255,255,255,.45)'; ctx.fillRect(x0, y - 2.5, (x1 - x0) * Math.min(1, playProgress(t) + .12), 5);
+  const playing = t >= T.play;
+  ytIcon(playing ? 'pause' : 'play', 46, PL.h - 28, 1.2, '#fff');
+  ytIcon('next', 100, PL.h - 28, 1.1, '#fff');
+  const sec = Math.floor(lerp(8, 222, smooth(prog(ft, T.play, T.grab))) / 1) ;
+  const s2 = Math.floor(sec - (sec % 1));
+  text(`${Math.floor(s2 / 60)}:${String(s2 % 60).padStart(2, '0')} / 12:15`, 146, PL.h - 27, 20, 500, '#fff');
+  ytIcon('cc', PL.w - 150, PL.h - 28, 1.2, '#fff'); ytIcon('gear', PL.w - 100, PL.h - 28, 1.2, '#fff'); ytIcon('full', PL.w - 48, PL.h - 28, 1.2, '#fff');
+}
+function ytPage(t, ft, contentA) {
+  // sayfa zemini ve kenar öğeleri (içerik geri çekilmenin ikinci yarısında belirir)
+  ctx.save(); ctx.globalAlpha = contentA;
+  ytIcon('menu', 44, 44, 1.3, COL.ytText);
+  avatar(96, 44, 16); text('infoakademi', 124, 45, 22, 700, COL.ytText);
+  ctx.fillStyle = '#121212'; rr(cx - 360, 22, 640, 46, 23); ctx.fill(); ctx.strokeStyle = '#303030'; ctx.lineWidth = 1.5; ctx.stroke();
+  text('Ara', cx - 330, 46, 20, 500, '#888'); ytIcon('search', cx + 245, 45, 1.1, '#aaa');
+  ytIcon('bell', W - 120, 45, 1.3, COL.ytText); circle(W - 60, 45, 18, '#3b82f6'); text('S', W - 60, 46, 18, 700, '#fff', 'center');
+  // başlık + meta + kanal satırı
+  text('Online Eğitimle Yeni Bir Beceri Kazan', PL.x, 902, 34, 700, COL.ytText, 'left', 1, -.02);
+  text('12 B görüntüleme  •  2 gün önce', PL.x, 946, 22, 500, COL.ytSub);
+  avatar(PL.x + 26, 1010, 26); text('infoakademi', PL.x + 66, 1000, 24, 700, COL.ytText); text('24,6 B abone', PL.x + 66, 1028, 18, 500, COL.ytSub);
+  const pills = [['like', 'Beğen'], ['share', 'Paylaş'], ['save', 'Kaydet']];
+  let px = PL.x + PL.w;
+  for (let i = pills.length - 1; i >= 0; i--) {
+    const [ic, s] = pills[i], w = measure(s, 22, 600) + 74; px -= w;
+    ctx.fillStyle = COL.ytCard; rr(px, 988, w, 44, 22); ctx.fill(); ytIcon(ic, px + 28, 1010, 1, COL.ytText); text(s, px + 48, 1011, 22, 600, COL.ytText);
+    px -= 12;
+  }
+  // yan sütun: sıradaki eğitimler
+  text('Sıradaki', 1488, 110, 24, 700, COL.ytText);
+  const rec = [['Photoshop\'a Giriş', '#2563eb'], ['Canlı Ders: Tipografi', '#151515'], ['Ön Muhasebe Temelleri', '#16a34a'], ['Portfolyo Nasıl Hazırlanır?', '#ff8a3d']];
+  rec.forEach(([s, c], i) => {
+    const y = 144 + i * 150;
+    ctx.fillStyle = c; rr(1488, y, 220, 124, 10); ctx.fill(); ytIcon('play', 1598, y + 62, 1.4, 'rgba(255,255,255,.85)');
+    text(s, 1726, y + 22, 21, 600, COL.ytText); text('infoakademi', 1726, y + 54, 18, 500, COL.ytSub); text(`${[8, 5, 11, 3][i]} B görüntüleme`, 1726, y + 80, 18, 500, COL.ytSub);
+  });
+  ctx.restore();
+  // oynatıcı
+  ctx.save(); ctx.translate(PL.x, PL.y); ctx.beginPath(); rr(0, 0, PL.w, PL.h, 14); ctx.clip();
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, PL.w, PL.h);
+  ctx.globalAlpha = contentA; videoContent(t); chip(t); controls(t, ft);
+  ctx.restore();
+}
+function progressLine(t) {
+  // kırmızı ilerleme çizgisi (dünya koordinatı); sürüklemede ucu imleçle birlikte gider, sonra maviye döner
+  const tip = tipX(t);
+  const blueP = prog(t, T.pan + .1, T.pan + .6);
+  const col = mixC(COL.red, COL.blue, blueP);
+  const lw = lerp(5, 7, prog(t, T.grab, T.grab + .3));
+  if (t < T.chart) {
+    ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(PB.x0, PB.y); ctx.lineTo(tip, PB.y); ctx.stroke();
+    const kr = t < T.grab ? lerp(0, 9, prog(t, T.grab - .4, T.grab - .1)) : 11;
+    circle(tip, PB.y, kr, col);
+  }
+}
+
+// ===================================================================================
+// SAHNE 06 — Türkçe öğrenme analitiği (dünya: AX ofseti)
+// ===================================================================================
+function analytics(t, ft) {
+  const on = IN2(t, T.pan);
+  // noktalı koyu zemin
+  ctx.save(); ctx.globalAlpha = on;
+  ctx.fillStyle = 'rgba(255,255,255,.07)';
+  for (let x = AX - 200; x < AX + W + 200; x += 36) for (let y = 0; y < H; y += 36) ctx.fillRect(x, y, 2.4, 2.4);
+  ctx.restore();
+  const ca = IN2(t, T.chart);
+  // eksen + haftalar
+  ctx.save(); ctx.globalAlpha = ca;
+  text('Öğrenme İlerlemesi', CL, 170, 56, 800, '#fff', 'left', 1, -.03);
+  text('Haftalık İlerleme · Ders Tamamlama', CL, 226, 24, 500, '#8a8f99');
+  for (let i = 0; i <= 4; i++) { const y = BASE - i / 4 * CH_H; ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.fillRect(CL, y, 1120, 1.5); text(`%${i * 25}`, CL - 24, y, 18, 500, '#6b7280', 'right'); }
+  WK.forEach((x, i) => text(`${i + 1}. Hafta`, x, BASE + 44, 22, 600, '#9ca3af', 'center'));
+  ctx.restore();
+  // çizgi: yatay çizgi yukarı kıvrılır, noktalar adım adım yükselir
+  const lift = i => EZ(prog(t, T.steps[i], T.steps[i] + .5));
+  const pts = [[CL - 40, BASE]];
+  WK.forEach((x, i) => { const prevY = pts[pts.length - 1][1]; pts.push([x, lerp(prevY, WY[i], lift(i))]); });
+  if (t >= T.chart) {
+    ctx.save(); ctx.strokeStyle = COL.blue; ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // soldaki uzantı (YouTube'dan gelen) chart başladıkça söner
+    ctx.globalAlpha = 1 - prog(t, T.chart, T.chart + .8);
+    ctx.beginPath(); ctx.moveTo(PB.x0, BASE); ctx.lineTo(CL - 40, BASE); ctx.stroke();
+    ctx.globalAlpha = 1;
+    // alan dolgusu
+    const g = ctx.createLinearGradient(0, WY[3], 0, BASE); g.addColorStop(0, hexA(COL.blue, .22)); g.addColorStop(1, hexA(COL.blue, 0));
+    ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.lineTo(WK[3], BASE); ctx.lineTo(CL - 40, BASE); ctx.closePath(); ctx.fillStyle = g; ctx.globalAlpha = ca; ctx.fill(); ctx.globalAlpha = 1;
+    ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(...p) : ctx.moveTo(...p)); ctx.stroke();
+    ctx.restore();
+    WK.forEach((x, i) => {
+      const l = lift(i); if (l <= 0) return;
+      const last = i === 3, g2 = last ? prog(t, T.steps[3] + .3, T.steps[3] + .6) : 0;
+      const col = last ? mixC(COL.blue, COL.green, g2) : COL.blue;
+      circle(x, pts[i + 1][1], 16 * Math.min(1, l * 1.5), '#0f0f0f'); circle(x, pts[i + 1][1], 11 * Math.min(1, l * 1.5), col);
+      if (!last) text(`%${VAL.pct[i]}`, x, pts[i + 1][1] - 36, 22, 700, '#fff', 'center', prog(t, T.steps[i] + .2, T.steps[i] + .5));
+    });
+    const fa = prog(t, T.steps[3] + .35, T.steps[3] + .75);
+    if (fa > 0) {
+      const x = WK[3] - 142, y = WY[3] - 74;
+      ctx.save(); ctx.globalAlpha = fa; ctx.fillStyle = hexA(COL.green, .16); rr(x, y - 30, 284, 60, 30); ctx.fill(); ctx.strokeStyle = COL.green; ctx.lineWidth = 2; ctx.stroke(); ctx.restore();
+      text('%100 Tamamlandı', x + 24, y + 1, 26, 700, COL.green, 'left', fa);
+    }
+  }
+  // istatistik kartları (değerler vuruşlarda sabit adımlarla değişir; ft kullanılır → bulanıklıkta titremez)
+  let si = 0; for (let i = 0; i < 4; i++) if (ft >= T.steps[i]) si = i;
+  const tiles = [['Ders Tamamlama', `%${VAL.pct[si]}`], ['Tamamlanan Ders', `${VAL.les[si]}`], ['Uygulama Projesi', `${VAL.prj[si]}`], ['Toplam Eğitim Süresi', VAL.hrs[si]]];
+  tiles.forEach(([l, v], i) => {
+    const a = IN2(t, T.chart + i * .08);
+    const x = AX + 1560, y = 250 + i * 150;
+    ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = '#181a1f'; rr(x, y, 380, 128, 18); ctx.fill(); ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1.5; ctx.stroke(); ctx.restore();
+    text(l, x + 28, y + 38, 22, 500, '#9ca3af', 'left', a);
+    text(v, x + 28, y + 88, 44, 800, i === 0 && si === 3 ? COL.green : '#fff', 'left', a, -.02);
+  });
+}
+
+// ===================================================================================
+// SAHNE 07 — başarı kartı, sertifika, başarı kartları, rozet
+// ===================================================================================
+const SCARD = { x: cx, y: cy, w: 780, h: 440, r: 32 };
+const ACH = ['24 Ders Tamamlandı', '15 Proje Uygulandı', '42 Saat Eğitim', '%100 Eğitim Tamamlama', 'Yeni Bir Beceri Kazandın'];
+function certIcon(x, y, s, unfold, a) {
+  if (a <= 0) return;
+  ctx.save(); ctx.globalAlpha *= a; ctx.translate(x, y);
+  const w = 150 * s, h = 104 * s, u = EZ(unfold);
+  // iki kanatlı açılma: üst yarı sabit, alt yarı katlanmadan açılır
+  ctx.fillStyle = '#fff'; ctx.strokeStyle = COL.blue; ctx.lineWidth = 3;
+  rr(-w / 2, -h / 2, w, h / 2, 8); ctx.fill(); ctx.stroke();
+  ctx.save(); ctx.translate(0, 0); ctx.scale(1, lerp(.02, 1, u)); rr(-w / 2, 0, w, h / 2, 8); ctx.fill(); ctx.stroke(); ctx.restore();
+  ctx.fillStyle = hexA(COL.blue, .25); ctx.fillRect(-w / 2 + 18, -h / 2 + 18, w - 36, 6); ctx.fillRect(-w / 2 + 30, -h / 2 + 32, w - 60, 5);
+  circle(w / 2 - 26, h / 2 * u - 18 * u, 14 * u, COL.blue);
+  ctx.restore();
+}
+function scene07(t) {
+  stageBg();
+  // başarı kartı yeşil noktadan büyür
+  const e = M(t, T.congrats);
+  const shift = M(t, T.stack[0] - .2);
+  const badgeE = M(t, T.badge);
+  const card = lerpBox({ x: cx, y: cy, w: 60, h: 60, r: 30 }, SCARD, e);
+  card.x -= 330 * shift;
+  const BADGE = { x: cx, y: cy, w: 560, h: 104, r: 52 };
+  const cardF = lerpBox(card, BADGE, badgeE);
+  if (t < T.badge + MD) {
+    const ca = t < T.badge ? 1 : 1 - prog(t, T.badge + .4, T.badge + .8);
+    ctx.save(); ctx.globalAlpha = ca;
+    softShadow(() => { rrc(cardF); ctx.fillStyle = mixC(COL.green, '#ffffff', e); ctx.fill(); }, e);
+    ctx.save(); rrc(cardF); ctx.clip();
+    const ia = IN2(t, T.congrats) * (t < T.badge ? 1 : 1 - prog(t, T.badge, T.badge + .3));
+    const ox = cardF.x, oy = cardF.y;
+    certIcon(ox, oy - 120, 1, prog(t, T.congrats + .4, T.congrats + 1.2), ia);
+    text('Katılım Sertifikası', ox, oy - 38, 24, 700, COL.blue, 'center', ia);
+    text('Tebrikler!', ox, oy + 40, 66, 800, COL.ink, 'center', ia, -.03);
+    text('Eğitimini başarıyla tamamladın.', ox, oy + 106, 30, 500, COL.gray, 'center', ia);
+    ctx.restore(); ctx.restore();
+  }
+  // başarı kartları: sertifikadan çıkar, sağda yukarı doğru dizilir
+  ACH.forEach((s, i) => {
+    const t0 = T.stack[i], p = M(t, t0);
+    if (p <= 0) return;
+    const from = { x: cx - 330, y: cy - 120 }, to = { x: cx + 380, y: cy + 250 - i * 108 };
+    let x = lerp(from.x, to.x, p), y = lerp(from.y, to.y, p);
+    const bw = 470, bh = 84;
+    // rozete sıkışma
+    x = lerp(x, cx, badgeE); y = lerp(y, cy, badgeE);
+    const sc = lerp(lerp(.3, 1, p), .4, badgeE);
+    const a = clamp(p * 3) * (t < T.badge ? 1 : OUT2(t, T.badge));
+    if (a <= 0) return;
+    ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y); ctx.scale(sc, sc);
+    softShadow(() => { ctx.fillStyle = '#fff'; rr(-bw / 2, -bh / 2, bw, bh, 20); ctx.fill(); }, .8);
+    circle(-bw / 2 + 44, 0, 20, COL.green); ctx.save(); ctx.translate(-bw / 2 + 44, 0); ctx.scale(.5, .5); checkMark(0, 0, 1, 1); ctx.restore();
+    text(s, -bw / 2 + 80, 1, 28, 600, COL.ink, 'left');
+    ctx.restore();
+  });
+  // rozet
+  const ba = IN2(t, T.badge);
+  if (ba > 0 && t < T.career[0] + MD) {
+    const k = M(t, T.career[0]);
+    ctx.save(); ctx.globalAlpha = ba * (1 - prog(t, T.career[0] + .4, T.career[0] + .8));
+    const B2 = lerpBox(BADGE, { x: cx, y: cy - 60, w: 220, h: 180, r: 26 }, k);
+    softShadow(() => { rrc(B2); ctx.fillStyle = mixC(COL.ink, COL.blue, k); ctx.fill(); }, 1);
+    circle(B2.x - B2.w / 2 + 56, B2.y, 26 * (1 - k), COL.green); ctx.save(); ctx.translate(B2.x - B2.w / 2 + 56, B2.y); ctx.scale(.55 * (1 - k), .55 * (1 - k)); checkMark(0, 0, 1, 1); ctx.restore();
+    text('Başarıyla Tamamlandı', B2.x + 28, B2.y + 2, 34, 700, '#fff', 'center', 1 - prog(t, T.career[0], T.career[0] + .4));
+    ctx.restore();
+  }
+}
+
+// ===================================================================================
+// SAHNE 08 — kariyer anları
+// ===================================================================================
+const CAREER = ['Portfolyon Hazır', 'Yeni Yeteneğini CV\'ne Ekle', 'Kariyerine Bir Adım Daha Yaklaş', 'Kendine Yatırım Yap'];
+const ICY = cy - 70;
+function folder(p, a) {
+  ctx.save(); ctx.globalAlpha *= a; ctx.translate(cx, ICY);
+  ctx.fillStyle = '#1d4ed8'; rr(-110, -80, 90, 30, 10); ctx.fill(); rr(-110, -64, 220, 150, 18); ctx.fill();
+  for (let i = 0; i < 3; i++) { ctx.fillStyle = ['#fff', '#f1f1ee', '#e7e7e2'][i]; rr(-86 + i * 8, -60 - p * (46 - i * 12), 172 - i * 16, 110, 8); ctx.fill(); }
+  ctx.save(); ctx.transform(1, 0, -.35 * p, 1, 0, 0); ctx.scale(1, 1 - .25 * p); ctx.fillStyle = COL.blue; rr(-110, -30 + 30 * p, 220, 116, 18); ctx.fill(); ctx.restore();
+  ctx.restore();
+}
+function cvDoc(p, a) {
+  ctx.save(); ctx.globalAlpha *= a; ctx.translate(cx, ICY + (1 - p) * 70);
+  softShadow(() => { ctx.fillStyle = '#fff'; rr(-100, -130, 200, 260, 16); ctx.fill(); }, 1);
+  circle(-54, -80, 26, '#d4d4cf'); text('CV', 20, -80, 36, 800, COL.ink, 'center');
+  for (let i = 0; i < 4; i++) { ctx.fillStyle = '#e4e4df'; rr(-72, -22 + i * 30, i % 2 ? 110 : 144, 12, 6); ctx.fill(); }
+  const np = prog(p, .5, 1); ctx.fillStyle = hexA(COL.blue, .9 * np); rr(-72, 100, 144 * np, 16, 8); ctx.fill();
+  ctx.restore();
+}
+function briefcase(p, a) {
+  ctx.save(); ctx.globalAlpha *= a; ctx.translate(cx, ICY);
+  ctx.strokeStyle = COL.ink; ctx.lineWidth = 12; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(-40, -70); ctx.lineTo(-40, -70 - 24 * p); ctx.lineTo(40, -70 - 24 * p); ctx.lineTo(40, -70); ctx.stroke();
+  ctx.fillStyle = COL.ink; rr(-130, -70, 260, 180, 20); ctx.fill();
+  ctx.save(); ctx.scale(1, lerp(.2, 1, p)); ctx.fillStyle = '#2b2b2b'; rr(-130, -70, 260, 70, 20); ctx.fill(); ctx.restore();
+  ctx.fillStyle = COL.blue; rr(-18, -10, 36, 26, 6); ctx.fill();
+  ctx.restore();
+}
+function growth(p, a, ext = 0) {
+  ctx.save(); ctx.globalAlpha *= a; ctx.translate(cx, ICY);
+  ctx.strokeStyle = '#cfcfc9'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-150, -110); ctx.lineTo(-150, 110); ctx.lineTo(150, 110); ctx.stroke();
+  const pts = [[-150, 90], [-70, 40], [0, 56], [80, -20], [150, -90]];
+  ctx.strokeStyle = COL.green; ctx.lineWidth = 9; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.beginPath();
+  const n = p * (pts.length - 1);
+  for (let i = 0; i <= Math.floor(n) && i < pts.length; i++) i ? ctx.lineTo(...pts[i]) : ctx.moveTo(...pts[i]);
+  const k = Math.floor(n); if (k < pts.length - 1) { const f = n - k; ctx.lineTo(lerp(pts[k][0], pts[k + 1][0], f), lerp(pts[k][1], pts[k + 1][1], f)); }
+  ctx.stroke();
+  ctx.restore();
+}
+function scene08(t) {
+  stageBg();
+  const icons = [folder, cvDoc, briefcase, growth];
+  for (let i = 0; i < 4; i++) {
+    const t0 = T.career[i], t1 = i < 3 ? T.career[i + 1] : T.extend;
+    if (t < t0 || t > t1 + MD) continue;
+    const pin = M(t, t0), aIn = IN2(t, t0), aOut = t < t1 ? 1 : 1 - prog(t, t1, t1 + .35);
+    if (i === 3 && t >= T.extend) continue; // son grafik uzama sahnesinde çizilir
+    icons[i](pin, aIn * aOut);
+    text(CAREER[i], cx, ICY + 220 + (1 - aIn) * 14, 52, 800, COL.ink, 'center', aIn * aOut, -.025);
+  }
+  // son grafik çizgisi yatayda uzar → CTA çizgisi
+  if (t >= T.extend) {
+    const e = M(t, T.extend);
+    growth(1, 1 - prog(t, T.extend + .1, T.extend + .5));
+    text(CAREER[3], cx, ICY + 220, 52, 800, COL.ink, 'center', OUT2(t, T.extend), -.025);
+    // çizgi: grafiğin ucundan yatay uzar
+    ctx.save(); ctx.strokeStyle = mixC(COL.green, COL.ink, e); ctx.lineWidth = lerp(9, 6, e); ctx.lineCap = 'round';
+    const y = lerp(ICY - 90, cy, e);
+    ctx.beginPath(); ctx.moveTo(lerp(cx + 150, cx - 550, e), y); ctx.lineTo(lerp(cx + 150, cx + 550, e), y); ctx.stroke(); ctx.restore();
+  }
+}
+
+// ===================================================================================
+// SAHNE 09 — Beğen / Abone Ol / Bildirimler (başarı çizgisinden oluşur)
+// ===================================================================================
+const CTA = { x: cx, y: cy, w: 1100, h: 300, r: 28 };
+function scene09(t, ft) {
+  stageBg();
+  const e = M(t, T.cta);
+  const lineBox = { x: cx, y: cy, w: 1100, h: 6, r: 3 };
+  let box = lerpBox(lineBox, CTA, e);
+  const toLine = M(t, T.toLine);
+  if (t >= T.toLine) box = lerpBox(CTA, { x: cx, y: cy, w: 700, h: 6, r: 3 }, toLine);
+  softShadow(() => { rrc(box); ctx.fillStyle = mixC(COL.ink, COL.yt, e); ctx.fill(); }, e * (1 - toLine));
+  const ca = IN2(t, T.cta) * (t < T.toLine ? 1 : OUT2(t, T.toLine));
+  if (ca > 0) {
+    ctx.save(); rrc(box); ctx.clip(); ctx.globalAlpha = ca;
+    const L = CTA.x - CTA.w / 2, Tp = CTA.y - CTA.h / 2;
+    avatar(L + 90, Tp + 96, 46);
+    text('infoakademi', L + 160, Tp + 82, 38, 700, COL.ytText, 'left', 1, -.02);
+    text('Online eğitim videoları ve ücretsiz içerikler', L + 160, Tp + 124, 24, 500, COL.ytSub);
+    // Beğen
+    const likeP = prog(t, T.like, T.like + .5);
+    const lx = L + 60, ly = Tp + 200;
+    ctx.fillStyle = COL.ytCard; rr(lx, ly, 200, 64, 32); ctx.fill();
+    ctx.save(); ctx.translate(lx + 46, ly + 32);
+    if (likeP > 0) { ctx.save(); ctx.beginPath(); ctx.rect(-16, 16 - 32 * EZ(likeP), 32, 32); ctx.clip(); ctx.scale(1.4, 1.4); ctx.fillStyle = COL.blue; ctx.beginPath(); ctx.moveTo(-9, -1); ctx.lineTo(-9, 9); ctx.lineTo(8, 9); ctx.lineTo(10, 0); ctx.lineTo(9, -2); ctx.lineTo(2, -2); ctx.lineTo(3, -6); ctx.quadraticCurveTo(3, -10, 0, -9); ctx.lineTo(-4, -1); ctx.closePath(); ctx.fill(); ctx.restore(); }
+    ctx.restore();
+    ytIcon('like', lx + 46, ly + 32, 1.4, likeP > .5 ? COL.blue : COL.ytText);
+    text('Beğen', lx + 82, ly + 33, 26, 600, COL.ytText);
+    // Abone Ol → Abone Olundu
+    const sp = M(t, T.sub, .5);
+    const sw = lerp(210, 270, sp), sx = L + CTA.w - 60 - 80 * sp - sw;
+    ctx.fillStyle = mixC('#f1f1f1', COL.ytCard, sp); rr(sx, ly, sw, 64, 32); ctx.fill();
+    text('Abone Ol', sx + sw / 2, ly + 33, 26, 700, COL.yt, 'center', 1 - prog(t, T.sub + .1, T.sub + .3));
+    text('Abone Olundu', sx + sw / 2, ly + 33, 26, 600, COL.ytText, 'center', prog(t, T.sub + .2, T.sub + .45));
+    // zil (abone olduktan sonra) — "Bildirimleri Aç"
+    const ba = prog(t, T.sub + .2, T.sub + .5);
+    if (ba > 0) {
+      const bx = L + CTA.w - 60 - 64, rot = .32 * Math.sin(prog(t, T.all + .1, T.all + .6) * Math.PI);
+      ctx.save(); ctx.globalAlpha = ca * ba; ctx.fillStyle = COL.ytCard; rr(bx, ly, 64, 64, 32); ctx.fill();
+      ctx.translate(bx + 32, ly + 22); ctx.rotate(rot); ytIcon('bell', 0, 10, 1.4, t > T.all + .1 ? COL.blue : COL.ytText); ctx.restore();
+      text('Bildirimleri Aç', bx + 32, ly - 22, 18, 600, COL.ytSub, 'center', ba * (1 - prog(t, T.bell, T.bell + .3)));
+    }
+    ctx.restore();
+  }
+  // beğendin notu
+  const la = prog(t, T.like + .2, T.like + .5) * (1 - prog(t, T.msg - .2, T.msg + .2));
+  text('Videoyu beğendin', CTA.x - CTA.w / 2 + 60, CTA.y + CTA.h / 2 + 44, 24, 600, COL.blue, 'left', la);
+  // bildirim menüsü
+  const mo = M(t, T.bell, .45) * (1 - M(t, T.all + .15, .4));
+  if (mo > 0) {
+    const bx = CTA.x + CTA.w / 2 - 60 - 32, by = CTA.y + CTA.h / 2 - 36 + 40;
+    ctx.save(); ctx.translate(bx, by); ctx.scale(1, mo); ctx.globalAlpha = clamp(mo * 1.6);
+    softShadow(() => { ctx.fillStyle = '#212121'; rr(-300, 0, 330, 196, 16); ctx.fill(); }, 1);
+    const items = ['Tümü', 'Kişiselleştirilmiş', 'Hiçbiri'];
+    const sel = prog(t, T.all - .05, T.all + .1);
+    items.forEach((s, i) => {
+      if (i === 0) { ctx.fillStyle = `rgba(255,255,255,${.06 + .1 * sel})`; rr(-292, 10, 314, 56, 10); ctx.fill(); }
+      ytIcon('bell', -262, 38 + i * 60, 1, i === 0 && sel > .5 ? COL.blue : COL.ytText);
+      text(s, -232, 39 + i * 60, 24, 600, COL.ytText);
+    });
+    ctx.restore();
+  }
+  // mesaj
+  const ma = IN2(t, T.msg - .4) * (t < T.toLine ? 1 : OUT2(t, T.toLine));
+  text('Yeni eğitimleri kaçırma.', cx, CTA.y - CTA.h / 2 - 90 + (1 - ma) * 14, 56, 800, COL.ink, 'center', ma, -.03);
+  text('Beğen  •  Abone Ol  •  Öğrenmeye Devam Et', cx, CTA.y + CTA.h / 2 + 110, 28, 600, COL.gray, 'center', ma);
+}
+
+// ===================================================================================
+// SAHNE 10 — marka: çizgi → logo → çizgi → başla butonu (ilk kareyle aynı)
+// ===================================================================================
+function scene10(t) {
+  stageBg();
+  const LINE = { x: cx, y: cy, w: 700, h: 6, r: 3 };
+  const logoE = M(t, T.toLogo), foldE = M(t, T.fold2), btnE = M(t, T.toBtn);
+  // logo yerleşimi
+  const LG = 150, F = 118;
+  const tw = measure('infoakademi', F, 800, -.045), gap = 36, tot = LG + gap + tw;
+  const lx = cx - tot / 2, ly = cy - 70;
+  if (t < T.toBtn) {
+    const open = logoE * (1 - foldE);
+    // çizgi logonun altına iner ve kısalır; sol ucu logoya kıvrılır
+    const lineY = lerp(cy, ly + LG / 2 + 44, open), lineW = lerp(700, tot, open);
+    const lineH = 6;
+    ctx.fillStyle = COL.ink; rr(cx - lineW / 2, lineY - lineH / 2, lineW, lineH, 3); ctx.globalAlpha = 1 - open * .85; ctx.fill(); ctx.globalAlpha = 1;
+    if (open > 0) {
+      // maske: çizginin üstünden yukarı doğru açılır
+      ctx.save(); ctx.beginPath(); ctx.rect(0, lineY - (LG + 40) * open, W, (LG + 40) * open); ctx.clip();
+      ctx.globalAlpha = clamp(open * 1.4);
+      softShadow(() => { ctx.drawImage(LOGO, lx, ly - LG / 2, LG, LG); }, .6);
+      font(F, 800); ctx.letterSpacing = `${-.045 * F}px`; ctx.textBaseline = 'alphabetic';
+      ctx.fillStyle = COL.ink; ctx.fillText('info', lx + LG + gap, ly + LG / 2 - 8);
+      ctx.fillStyle = COL.blue; ctx.fillText('akademi', lx + LG + gap + measure('info', F, 800, -.045), ly + LG / 2 - 8);
+      ctx.letterSpacing = '0px'; ctx.restore();
+      const ta = IN2(t, T.toLogo) * (t < T.fold2 ? 1 : 1 - prog(t, T.fold2, T.fold2 + .35));
+      text('öğren. uygula. ilerle.', cx, ly + LG / 2 + 100, 36, 600, COL.blue, 'center', ta, -.01);
+      text('Online eğitimler  •  Canlı dersler  •  Yeni beceriler', cx, ly + LG / 2 + 156, 24, 500, COL.gray, 'center', ta);
+    }
+    return;
+  }
+  // çizgi kalınlaşır → başla butonu
+  const box = lerpBox({ ...LINE, w: BTN.w, y: BTN.y }, BTN, btnE);
+  box.w = lerp(LINE.w, BTN.w, btnE); box.y = lerp(LINE.y, BTN.y, btnE);
+  softShadow(() => { rrc(box); ctx.fillStyle = COL.ink; ctx.fill(); }, btnE);
+  text('Online Eğitime Başla', box.x, box.y + 2, 38, 600, '#fff', 'center', IN2(t, T.toBtn));
+  text('Kariyerine yeni bir beceri ekle.', cx, HELP_Y, 28, 500, COL.gray, 'center', IN2(t, T.toBtn));
+}
+
+// ===================================================================================
+// ana çizim
+// ===================================================================================
+function drawScene(t, ft) {
+  CUR = null;
+  ctx.save(); ctx.letterSpacing = '0px';
+  if (t < T.q) scene01(t);
+  else if (t < T.drop) {
+    scene02(t);
+    if (t >= T.fold) {
+      // birleşmiş nokta → play üçgeni
+      stageBg(); const e = M(t, T.fold);
+      playShape(cx, DOT_Y, lerp(40, 44, e), e, COL.blue);
+    }
+    // imleç play'e gider
+    if (t > T.fold) CUR = { ...xy(keyPath(t, [[T.fold, 2150, 1150], [T.drop - .12, cx + 6, DOT_Y + 8]])), press: pressAt(t, T.drop) };
+  } else if (t < T.congrats) {
+    // koyu taşma + YouTube dünyası + analitik
+    stageBg();
+    const fr = EZ(prog(t, T.drop, T.drop + .4)) * Math.hypot(W, H);
+    ctx.fillStyle = COL.yt; ctx.beginPath(); ctx.arc(cx + 6, DOT_Y + 8, fr, 0, Math.PI * 2); ctx.fill();
+    camera(t);
+    const contentA = IN2(t, T.pull);
+    withCam(() => {
+      if (t < T.pan + MD + .2) ytPage(t, ft, contentA);
+      analytics(t, ft);
+      progressLine(t);
+      // oynatıcı ortasındaki play düğmesi (tıklama yüzeyinden gelir)
+      const pa = t < T.play ? 1 : OUT2(t, T.play, .5);
+      if (pa > 0) {
+        const r = PLAY_R * lerp(0, 1, EZ(prog(t, T.drop - .02, T.drop + .15)));
+        ctx.save(); ctx.globalAlpha = pa; circle(PC[0], PC[1], r, '#fff');
+        ctx.restore();
+      }
+    });
+    // play üçgeni ekran uzayında: tıklama anındaki konumdan kamerayla birlikte küçülür
+    const pa = t < T.play ? 1 : OUT2(t, T.play, .5);
+    if (pa > 0) {
+      const [sx, sy] = toScr(PC[0], PC[1]);
+      ctx.save(); ctx.globalAlpha = pa;
+      playShape(sx + lerp(-6, 4, prog(t, T.drop, T.drop + .3)) * CAM.z / (70 / PLAY_R), sy, 30 * CAM.z / (70 / PLAY_R) * 1.4, 1, mixC(COL.blue, COL.yt, prog(t, T.drop, T.drop + .25)));
+      ctx.restore();
+    }
+    // imleç: play → ilerleme noktası → sürükle (noktaya bağlı) → son nokta
+    const knob = toScr(tipX(t), PB.y);
+    if (t < T.grab - .55) CUR = { ...xy(keyPath(t, [[T.drop, cx + 6, DOT_Y + 8], [T.pull + .8, 1250, 700], [T.grab - .55, 1250, 700]])), press: pressAt(t, T.drop) };
+    else if (t < T.grab) { const [kx, ky] = toScr(lerp(PB.x0, PB.x1, playProgress(T.grab)), PB.y); CUR = xy(keyPath(t, [[T.grab - .55, 1250, 700], [T.grab - .05, kx, ky]])); }
+    else if (t < T.pan + MD) CUR = { x: knob[0], y: knob[1], press: .6 };
+    else if (t < T.dive) { const [fx, fy] = toScr(WK[3], WY[3]); CUR = { ...xy(keyPath(t, [[T.pan + MD, knob[0], knob[1]], [T.steps[3] + .6, 1350, 900], [T.clickPt - .1, fx + 4, fy + 4]])), press: pressAt(t, T.clickPt) }; }
+    else { const [fx, fy] = toScr(WK[3], WY[3]); CUR = { x: fx + 4, y: fy + 4, a: 1 - prog(t, T.dive, T.dive + .3) }; }
+    // dalış: yeşil nokta ekranı doldurur, sonra sıcak sahneye geçer
+    if (t >= T.dive) { const k = prog(t, T.dive + .45, T.dive + .8); if (k > 0) { ctx.save(); ctx.globalAlpha = k; ctx.fillStyle = COL.green; ctx.fillRect(0, 0, W, H); ctx.restore(); } }
+  } else if (t < T.career[0] + MD && t < T.career[0] + MD) {
+    scene07(t);
+    // yeşilden sıcak sahneye
+    const g = 1 - prog(t, T.congrats - .05, T.congrats + .4);
+    if (g > 0) { ctx.save(); ctx.globalAlpha = g; ctx.fillStyle = COL.green; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+    if (t >= T.career[0]) { /* rozet kariyer sahnesine devreder */ ctx.save(); ctx.globalAlpha = prog(t, T.career[0] + .4, T.career[0] + .8); scene08(t); ctx.restore(); }
+  } else if (t < T.cta) scene08(t);
+  else if (t < T.toLogo) {
+    scene09(t, ft);
+    // imleç: Beğen → Abone Ol → zil → Tümü → dışarı
+    const L = CTA.x - CTA.w / 2, Tp = CTA.y - CTA.h / 2, ly = Tp + 200;
+    const likeP = [L + 130, ly + 34], subP = [L + CTA.w - 60 - 105, ly + 34], bellP = [L + CTA.w - 60 - 32, ly + 34], allP = [CTA.x + CTA.w / 2 - 92 - 200, CTA.y + CTA.h / 2 + 42];
+    CUR = { ...xy(keyPath(t, [[T.cta + .3, 2150, 1150], [T.like - .08, ...likeP], [T.sub - .08, ...subP], [T.bell - .08, ...bellP], [T.all - .08, ...allP], [T.toLine, 2150, 1150]])), press: Math.max(pressAt(t, T.like), pressAt(t, T.sub), pressAt(t, T.bell), pressAt(t, T.all)) };
+  } else scene10(t);
+  drawCursor();
+  ctx.restore();
+}
+
+// hareket bulanıklığı: normalde 4, en hızlı kamera kaydırmasında 12 alt kare (ileri yarım kare obtüratör)
+function subframes(t) { return (t > T.pan - .05 && t < T.pan + MD + .05) || (t > T.dive && t < T.dive + MD) ? 12 : 4; }
+function renderAt(ft) {
+  ft = clamp(ft, 0, DUR - 1e-4);
+  const S = RENDER ? subframes(ft) : 1;
+  if (S === 1) { drawScene(ft, ft); octx.globalAlpha = 1; octx.drawImage(buf, 0, 0); return; }
+  const sh = .5 / FPS;
+  for (let s = 0; s < S; s++) { drawScene(ft + s / S * sh, ft); octx.globalAlpha = 1 / (s + 1); octx.drawImage(buf, 0, 0); }
+  octx.globalAlpha = 1;
+}
+window.renderAt = renderAt; window.seek = renderAt; window.DUR = DUR;
+
+const LAT = 'U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD';
+const EXT = 'U+0100-0130,U+0132-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+1E00-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF';
+const faces = [
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-wght-normal.woff2)', { weight: '100 900', unicodeRange: LAT }),
+  new FontFace('Inter', 'url(../animation/fonts/inter-latin-ext-wght-normal.woff2)', { weight: '100 900', unicodeRange: EXT }),
+];
+window.ready = Promise.all([...faces.map(f => f.load()), new Promise(r => { const i = new Image(); i.onload = () => { LOGO = i; r(); }; i.src = 'logo.png'; })])
+  .then(fs => { fs.slice(0, 2).forEach(f => document.fonts.add(f)); return document.fonts.load('800 100px Inter', 'ğşıİüö'); })
+  .then(() => {
+    chatLayout();
+    if (!RENDER) { const t0 = performance.now(); const loop = now => { renderAt(((now - t0) / 1000) % DUR); requestAnimationFrame(loop); }; requestAnimationFrame(loop); }
+    return true;
+  });
+</script>
+</body>
+</html>
