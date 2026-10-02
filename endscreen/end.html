@@ -14,7 +14,7 @@
  * ilerleme çizgisi dolar) → "seviye yükselten eğitimler". Zamanlar 120 BPM ızgarasında.
  */
 const Q = new URLSearchParams(location.search);
-const W = 1920, H = 1080, DUR = 6, FPS = +Q.get('fps') || 60, RENDER = Q.has('render');
+const W = +Q.get('w') || 1920, H = +Q.get('h') || 1080, V = H > W, DUR = 6, FPS = +Q.get('fps') || 60, RENDER = Q.has('render');
 const BLUE = '#2563EB', BLUE2 = '#4A90F7', NAVY = '#0B1B3F';
 const out = document.getElementById('c'); out.width = W; out.height = H;
 const octx = out.getContext('2d');
@@ -45,15 +45,17 @@ let LOGO;
 // ---- yerleşim (fontlar yüklendikten sonra hesaplanır) ----
 let L = {};
 function layout() {
-  const LG = 190;                                  // logo boyu
   font(100, 800); ctx.letterSpacing = `${-0.045 * 100}px`;
   const m = ctx.measureText('infoakademi');
   const asc = m.actualBoundingBoxAscent / 100;     // taban çizgisinden en üste (harf başına)
+  ctx.letterSpacing = '0px';
+  // logo boyu: yatayda 190; dikeyde kilit genişliği ekranın %84'üne sığar
+  const w1 = measure('infoakademi', 100, 800, -.045) / (100 * asc);   // yazı genişliği / logo boyu
+  const LG = V ? Math.min(150, W * .84 / (1 + .22 + w1)) : 190;
   const F = LG / asc;                              // yazı yüksekliği = logo yüksekliği
   const wInfo = measure('info', F, 800, -.045), wAk = measure('akademi', F, 800, -.045);
-  ctx.letterSpacing = '0px';
   const gap = LG * .22, total = LG + gap + wInfo + wAk;
-  const x0 = W / 2 - total / 2, top = H * .36 - LG / 2;
+  const x0 = W / 2 - total / 2, top = (V ? H * .29 : H * .36) - LG / 2;
   L = { LG, F, gap, total, x0, top, wInfo, wAk, tx: x0 + LG + gap, base: top + LG };
 }
 
@@ -63,7 +65,7 @@ function background(t) {
   g.addColorStop(0, '#F8FAFF'); g.addColorStop(1, '#E3ECFF');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
   const pulse = E.outExpo(prog(t, .3, 1.2));
-  const rg = ctx.createRadialGradient(W / 2, H * .38, 0, W / 2, H * .38, W * .5);
+  const gy = V ? H * .29 : H * .38, rg = ctx.createRadialGradient(W / 2, gy, 0, W / 2, gy, V ? W * .75 : W * .5);
   rg.addColorStop(0, `rgba(37,99,235,${.1 * pulse})`); rg.addColorStop(1, 'rgba(37,99,235,0)');
   ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
   const S = 72, off = (t * 36) % S;
@@ -73,7 +75,7 @@ function background(t) {
   ctx.fillStyle = 'rgba(37,99,235,.15)';
   for (let x = (W / 2) % S; x < W; x += S) for (let y = off - S; y < H; y += S) ctx.fillRect(x - 1.5, y - 1.5, 3, 3);
   ctx.restore();
-  const v = ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, W * .62);
+  const v = V ? ctx.createRadialGradient(W / 2, H / 2, W * .45, W / 2, H / 2, H * .62) : ctx.createRadialGradient(W / 2, H / 2, H * .35, W / 2, H / 2, W * .62);
   v.addColorStop(0, 'rgba(240,245,255,0)'); v.addColorStop(1, 'rgba(240,245,255,.95)');
   ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
 }
@@ -127,14 +129,22 @@ function lockup(t) {
 // ---- butonlar ----
 const BTN = [['Kayıt ol', 'user'], ['İzle', 'play'], ['Sertifikanı al', 'badge']];
 const CLICK = [2.5, 3.1, 3.7];
-const BY = H * .64, BH = 96, BFS = 36;
+const BH = V ? 128 : 96, BFS = V ? 48 : 36;
 let BX = [];
+// her butonun kendi y'si (BX[i].y); dikeyde alt alta, yatayda yan yana
 function btnLayout() {
+  if (V) {
+    const w = Math.max(...BTN.map(([s]) => measure(s, BFS, 700, -.01))) + 230, gap = 92;
+    const y0 = H * .43;
+    BX = BTN.map((_, i) => ({ x: W / 2 - w / 2, w, cx: W / 2, y: y0 + i * (BH + gap) }));
+    return;
+  }
   const ws = BTN.map(([s]) => measure(s, BFS, 700, -.01) + 150);
   const gap = 90, tot = ws.reduce((a, b) => a + b, 0) + gap * 2;
   let x = W / 2 - tot / 2;
-  BX = ws.map(w => { const r = { x, w, cx: x + w / 2 }; x += w + gap; return r; });
+  BX = ws.map(w => { const r = { x, w, cx: x + w / 2, y: H * .64 }; x += w + gap; return r; });
 }
+const PT = i => [BX[i].cx + 20, BX[i].y + BH / 2 + 10];   // tıklama noktası
 function icon(kind, x, y, col) {
   ctx.save(); ctx.translate(x, y); ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 4; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   if (kind === 'user') {
@@ -156,18 +166,18 @@ function buttons(t) {
   // ilerleme hattı (butonların arkasında)
   const lineA = E.outCubic(prog(t, 1.7, 2.1));
   if (lineA > 0) {
-    const y = BY + BH / 2;
+    const P = BX.map(b => [b.cx, b.y + BH / 2]);
     ctx.save(); ctx.globalAlpha = lineA;
-    ctx.strokeStyle = 'rgba(37,99,235,.18)'; ctx.lineWidth = 4; ctx.setLineDash([2, 12]); ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(BX[0].cx, y); ctx.lineTo(BX[2].cx, y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(37,99,235,.18)'; ctx.lineWidth = V ? 5 : 4; ctx.setLineDash([2, 12]); ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(...P[0]); ctx.lineTo(...P[2]); ctx.stroke(); ctx.setLineDash([]);
     const f1 = E.inOutCubic(prog(t, CLICK[0] + .08, CLICK[1] - .05)), f2 = E.inOutCubic(prog(t, CLICK[1] + .08, CLICK[2] - .05));
-    ctx.strokeStyle = BLUE; ctx.lineWidth = 6; ctx.shadowColor = hexA(BLUE, .5); ctx.shadowBlur = 14;
-    if (f1 > 0) { ctx.beginPath(); ctx.moveTo(BX[0].cx, y); ctx.lineTo(lerp(BX[0].cx, BX[1].cx, f1), y); ctx.stroke(); }
-    if (f2 > 0) { ctx.beginPath(); ctx.moveTo(BX[1].cx, y); ctx.lineTo(lerp(BX[1].cx, BX[2].cx, f2), y); ctx.stroke(); }
+    ctx.strokeStyle = BLUE; ctx.lineWidth = V ? 8 : 6; ctx.shadowColor = hexA(BLUE, .5); ctx.shadowBlur = 14;
+    const seg = (a, b, f) => { if (f > 0) { ctx.beginPath(); ctx.moveTo(...a); ctx.lineTo(lerp(a[0], b[0], f), lerp(a[1], b[1], f)); ctx.stroke(); } };
+    seg(P[0], P[1], f1); seg(P[1], P[2], f2);
     ctx.restore();
   }
   BTN.forEach(([s, ic], i) => {
-    const t0 = 1.55 + i * .12, b = BX[i];
+    const t0 = 1.55 + i * .12, b = BX[i], BY = b.y;
     const sp = spring(t - t0, 1.8, 7);
     if (sp <= 0) return;
     const T = CLICK[i];
@@ -187,30 +197,31 @@ function buttons(t) {
     }
     const tc = fill > .5 ? '#fff' : BLUE;
     const done = t > T + .25;
-    const icx = b.x + 58;
+    const icx = b.x + (V ? 74 : 58);
     if (done) {
       const k = E.outBack(prog(t, T + .25, T + .5), 3);
-      ctx.save(); ctx.translate(icx, BY + BH / 2); ctx.scale(k, k); circle(0, 0, 22, 'rgba(255,255,255,.25)'); icon('check', 0, 0, '#fff'); ctx.restore();
-    } else icon(ic, icx, BY + BH / 2, tc);
-    text(s, b.x + 100, BY + BH / 2 + BFS * .36, BFS, 700, tc, 'left', -.01);
+      ctx.save(); ctx.translate(icx, BY + BH / 2); ctx.scale(k * (V ? 1.25 : 1), k * (V ? 1.25 : 1)); circle(0, 0, 22, 'rgba(255,255,255,.25)'); icon('check', 0, 0, '#fff'); ctx.restore();
+    } else { ctx.save(); ctx.translate(icx, BY + BH / 2); if (V) ctx.scale(1.25, 1.25); icon(ic, 0, 0, tc); ctx.restore(); }
+    if (V) text(s, b.cx + 24, BY + BH / 2 + BFS * .36, BFS, 700, tc, 'center', -.01);
+    else text(s, b.x + 100, BY + BH / 2 + BFS * .36, BFS, 700, tc, 'left', -.01);
     ctx.restore();
     // tıklama halkası
     const rp = prog(t, T, T + .5);
-    if (rp > 0 && rp < 1) { ctx.save(); ctx.globalAlpha = 1 - rp; ctx.strokeStyle = BLUE; ctx.lineWidth = 4 * (1 - rp) + 1; ctx.beginPath(); ctx.arc(b.cx + 20, BY + BH / 2 + 10, 20 + rp * 80, 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
+    if (rp > 0 && rp < 1) { ctx.save(); ctx.globalAlpha = 1 - rp; ctx.strokeStyle = BLUE; ctx.lineWidth = 4 * (1 - rp) + 1; ctx.beginPath(); ctx.arc(b.cx + 20, BY + BH / 2 + 10, 20 + rp * (V ? 100 : 80), 0, Math.PI * 2); ctx.stroke(); ctx.restore(); }
   });
 }
 
 // ---- imleç ----
 function cursor(t) {
-  const pts = [[W * .86, H * 1.08, 1.9], [BX[0].cx + 20, BY + BH / 2 + 10, 2.45], [BX[1].cx + 20, BY + BH / 2 + 10, 3.05], [BX[2].cx + 20, BY + BH / 2 + 10, 3.65], [W * .9, H * 1.1, 4.5]];
+  const pts = [[W * (V ? 1.12 : .86), H * (V ? .62 : 1.08), 1.9], [...PT(0), 2.45], [...PT(1), 3.05], [...PT(2), 3.65], [W * (V ? 1.15 : .9), H * (V ? .78 : 1.1), 4.5]];
   if (t < pts[0][2] || t > pts[4][2]) return;
   let x = pts[0][0], y = pts[0][1];
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1][2] + (i > 1 ? .12 : 0), b = pts[i][2];
-    if (t >= a) { const e = E.inOutQuint(prog(t, a, b)); x = lerp(pts[i - 1][0], pts[i][0], e); y = lerp(pts[i - 1][1], pts[i][1], e) - Math.sin(e * Math.PI) * 40; }
+    if (t >= a) { const e = E.inOutQuint(prog(t, a, b)); x = lerp(pts[i - 1][0], pts[i][0], e); y = lerp(pts[i - 1][1], pts[i][1], e) - (V ? 0 : Math.sin(e * Math.PI) * 40); if (V) x += Math.sin(e * Math.PI) * 50; }   // dikeyde yay yana doğru
   }
   const pr = CLICK.reduce((m, T) => Math.max(m, Math.sin(prog(t, T - .04, T + .12) * Math.PI)), 0);
-  const s = 2.1 * (1 - pr * .14);
+  const s = (V ? 2.4 : 2.1) * (1 - pr * .14);
   ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
   ctx.shadowColor = 'rgba(11,27,63,.35)'; ctx.shadowBlur = 10; ctx.shadowOffsetY = 4;
   ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, 24); ctx.lineTo(6, 18.5); ctx.lineTo(10.5, 28); ctx.lineTo(14.5, 26.2); ctx.lineTo(10.2, 17); ctx.lineTo(17.5, 17); ctx.closePath();
@@ -220,10 +231,10 @@ function cursor(t) {
 
 // ---- alt satır: seviye yükselten eğitimler ----
 function tagline(t) {
-  const s = 'seviye yükselten eğitimler', size = 46;
+  const s = 'seviye yükselten eğitimler', size = V ? 52 : 46;
   const tw = measure(s, size, 600, -.01);
-  const iconW = 64, tot = iconW + 22 + tw;
-  const x0 = W / 2 - tot / 2, y = H * .87;
+  const iconW = V ? 72 : 64, tot = iconW + 22 + tw;
+  const x0 = W / 2 - tot / 2, y = H * (V ? .84 : .87);
   const ip = spring(t - 4.1, 1.6, 6);
   if (ip > 0) {
     ctx.save(); ctx.translate(x0 + iconW / 2, y - size * .34); ctx.scale(ip, ip);

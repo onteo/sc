@@ -19,6 +19,7 @@ const FFMPEG = process.env.FFMPEG ||
 
 const FORMATS = [
   { w: 1920, h: 1080, fps: 60, name: 'infoakademi-bitis-ekrani-1920x1080.mp4' },
+  { w: 1080, h: 1920, fps: 60, name: 'infoakademi-bitis-ekrani-1080x1920.mp4' },
 ];
 
 const TYPES = { '.html': 'text/html', '.woff2': 'font/woff2', '.webp': 'image/webp', '.png': 'image/png' };
