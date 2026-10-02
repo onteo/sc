@@ -12,13 +12,13 @@ import { fileURLToPath } from 'node:url';
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(DIR, '..');
 const OUT = path.join(ROOT, 'videos');
-const DARK = process.env.DARK === '1';
-const AUDIO = path.join(ROOT, DARK ? 'reel/work/mix2.wav' : 'reel/work/mix.wav');
-const DUR = 25;
+const DARK = process.env.DARK === '1', SQ = process.env.SQ === '1';   // SQ=1: kare web sürümü (edit_sq.html)
+const AUDIO = path.join(ROOT, SQ ? 'reel/work/mix_sq.wav' : DARK ? 'reel/work/mix2.wav' : 'reel/work/mix.wav');
+const DUR = SQ ? 20 : 25;
 const FFMPEG = process.env.FFMPEG ||
   execSync(`python3 -c "import imageio_ffmpeg;print(imageio_ffmpeg.get_ffmpeg_exe())"`).toString().trim();
 
-const FORMATS = [
+const FORMATS = SQ ? [{ w: 1080, h: 1080, fps: 30, name: 'infoakademi-grafik-tasarim-web-1080x1080.mp4' }] : [
   { w: 1080, h: 1920, fps: 30, name: DARK ? 'infoakademi-reel-edit-dark-1080x1920.mp4' : 'infoakademi-reel-edit-1080x1920.mp4' },
 ];
 
@@ -35,7 +35,7 @@ const browser = await chromium.launch();
 
 async function open(w, h, fps = 60) {
   const page = await browser.newPage({ viewport: { width: 400, height: 400 } });
-  await page.goto(`http://localhost:${port}/reel/${DARK ? 'edit2' : 'edit'}.html?w=${w}&h=${h}&fps=${fps}&render=1`);
+  await page.goto(`http://localhost:${port}/reel/${SQ ? 'edit_sq' : DARK ? 'edit2' : 'edit'}.html?w=${w}&h=${h}&fps=${fps}&render=1`);
   await page.evaluate(() => window.ready);
   return page;
 }
