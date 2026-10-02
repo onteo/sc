@@ -1,6 +1,6 @@
 """
-KARE web sürümü (edit_sq.html, 20 sn): music2.py ile aynı müzik/efektler; konuşma "kayıtlar açık"ta (14.47 sn) biter,
-Instagram yorum/DM efektleri yok, kapanışta program çipleri ve "kayıtlar açık" efektleri.
+KARE web sürümü (edit_sq.html, 20 sn): music2.py ile aynı müzik; konuşma "sertifikanı al"da (11.88 sn) biter,
+Instagram yorum/DM efektleri yok; kapanışta logo, program çipleri, "kayıtlar açık" ve tasarım yelpazesi efektleri.
 Kullanım: python3 music_sq.py -> work/mix_sq.wav
 
 Kaynak — KOYU tema sürümü: karanlık minör beat (808), yoğun efektler (glitch, bas darbesi, yükselen gerilim).
@@ -32,8 +32,8 @@ if sr != SR:
     v = np.interp(np.arange(int(len(v) * SR / sr)) / SR, np.arange(len(v)) / sr, v)
 voice = np.zeros(N)
 voice[:min(N, len(v))] = v[:N]
-VEND = 14.47
-voice *= np.clip((VEND - t_all) / .04, 0, 1)        # "yorumlara yaz" bölümü web'de yok
+VEND = 11.88
+voice *= np.clip((VEND - t_all) / .04, 0, 1)        # "sertifikanı al"dan sonrası web'de yok
 act = voice[np.abs(voice) > 0.01]
 voice *= 0.2 / (np.sqrt(np.mean(act ** 2)) + 1e-9)   # konuşma seviyesini sabitle
 
@@ -143,11 +143,11 @@ swish(.02, .45, 300, 4000, .35)
 sfx.add(impact(.35), .5, gain=.25)
 swish(1.5, .5, 4000, 300, .28)
 # arka dev yazılar
-for t0 in (.1, .36, 3.86, 4.62, 5.1, 12.02):
+for t0 in (.1, .36, 3.86, 4.62, 5.1):
     swish(t0 - .05, .28, 800, 6000, .22)
     sfx.add(np.sin(2 * np.pi * 70 * tt(.25)) * np.exp(-tt(.25) * 14), t0 + .12, gain=.35)
 # vurgulu kelimeler
-for t0 in (1.16, 3.45, 7.0, 8.85, 11.6, 13.75):
+for t0 in (1.16, 3.45, 7.0, 8.85, 11.6):
     pop(t0, 1100, .14)
 # soru işaretleri, Aa, renkler, ızgara
 for t0, f in ((2.12, 700), (2.55, 900), (3.2, 800)):
@@ -165,10 +165,10 @@ keys(7.05, 7.75, 13, .22)
 pop(7.9, 800, .18)
 # portfolyo
 swish(8.25, .35, 300, 5000, .35)
-swish(8.62, .3, 1500, 4000, .2)
 swish(9.08, .35, 400, 5000, .3)
-for i in range(3):
-    pop(9.85 + i * .1, 600 + i * 200, .2)
+swish(9.72, .3, 2000, 600, .15)                       # afiş diziye küçülür
+for i in (0, 2, 3):
+    pop(9.8 + i * .1, 600 + i * 150, .2)
 swish(10.72, .3, 5000, 400, .3)
 # sertifika + damga
 pop(11.15, 500, .25)
@@ -176,19 +176,29 @@ for i, m in enumerate([84, 88, 91]):
     c = chime(m, 1.0)
     sfx.add(c, 11.4 + i * .06, gain=.12)
     send.add(c, 11.4 + i * .06, gain=.18)
-sfx.add(impact(.6), 13.72, gain=.4)
-sfx.add(snap(), 13.72, gain=.4)
-swish(13.85, .5, 3000, 10000, .12)
 # kapanış: marka + programlar + kayıtlar açık
-FIN = 14.45
+FIN = 11.85
+FAN = 15.5
 swish(FIN, .45, 300, 4000, .3)
 for i, m in enumerate([72, 76, 79, 84, 88, 91]):
     c = chime(m, 1.2)
     sfx.add(c, FIN + .15 + i * .09, gain=.08, pan=-.4 + i * .16)
     send.add(c, FIN + .15 + i * .09, gain=.15)
 swish(FIN + .6, .5, 2000, 8000, .1)
+pop(FIN + .12, 500, .25)                                # logo
 for i in range(3):
-    pop(FIN + 1.37 + i * .25, 700 + i * 180, .24)
+    pop(FIN + 1.47 + i * .25, 700 + i * 180, .24)
+# tasarımlar: deste yükselir, kartlar yelpaze gibi açılır (kart şıklatma sesi)
+swish(FAN, .5, 3000, 600, .18)
+swish(FAN + .15, .6, 300, 3500, .3)
+for i in range(4):
+    tf = FAN + .8 + i * .07
+    sfx.add(filt(noise(.05), 'bandpass', [1800, 7000]) * np.exp(-tt(.05) * 80), tf, gain=.45, pan=-.3 + i * .2)
+    sfx.add(tick(), tf, gain=.25)
+for i, m in enumerate([79, 84, 88, 91]):
+    c = chime(m, 1.0)
+    sfx.add(c, FAN + 1.7 + i * .09, gain=.07)
+    send.add(c, FAN + 1.7 + i * .09, gain=.12)
 # ---- koyu tema ek efektleri ----
 def boom(t0, g=.5):
     tb = tt(1.2)
@@ -218,20 +228,21 @@ def slam(t0, g=.18):
     sfx.add(np.sin(2 * np.pi * 110 * ts) * np.exp(-ts * 35) + filt(noise(.12), 'highpass', 3000) * np.exp(-ts * 60) * .4, t0, gain=g)
 
 
-for t0 in (3.8, 5.95, 8.28, 10.87, 12.0, 14.5):   # glitch anları
+for t0 in (3.8, 5.95, 8.28, 10.87, FIN):   # glitch anları
     zap(t0)
-for t0 in (.75, 1.85, 3.1, 6.0, 8.38, 10.95, 13.2):  # cümle başları
+for t0 in (.75, 1.85, 3.1, 6.0, 8.38, 10.95):  # cümle başları
     boom(t0, .45)
 riser(5.2, .75)
 riser(7.6, .68, .22)
-riser(16.4, .55, .2)
+riser(FAN - .55, .55, .2)
 # her altyazı kelimesi çarpınca hafif vuruş
-WORD_T = [0.12, 0.77, 1.16, 1.87, 2.09, 2.43, 3.11, 3.45, 6.04, 6.45, 7.0, 7.3, 7.65, 8.42, 8.85, 9.72, 10.3, 11.01, 11.6, 13.25, 13.75]
+WORD_T = [0.12, 0.77, 1.16, 1.87, 2.09, 2.43, 3.11, 3.45, 6.04, 6.45, 7.0, 7.3, 7.65, 8.42, 8.85, 9.72, 10.3, 11.01, 11.6]
 for t0 in WORD_T:
     slam(t0)
 
 # kayıtlar açık rozeti
 boom(FIN + 2.55, .4)
+boom(FAN + 1.5, .3)                                     # yelpaze açılınca
 slam(FIN + 2.55, .25)
 swish(FIN + 3.1, .4, 3000, 9000, .1)
 
